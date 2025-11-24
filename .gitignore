@@ -1,6 +1,9 @@
 # Report
 report/
 
+# IDE Settings
+.vscode/
+
 # Prerequisites
 *.d
 
