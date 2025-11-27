@@ -62,11 +62,71 @@ static uint8_t *g_heap = NULL;       // Base pointer
 static size_t   g_heap_size = 0;     // Size of heap memory in bytes
 
 
+/**
+ * @brief Get a pointer to the footer from a pointer of the header and the block size.
+ * 
+ * @param h The header pointer.
+ * @return * BlockFooter* A pointer to the footer.
+ */
 BlockFooter* get_footer(BlockHeader *h){
     if (!h){
         return NULL;
     }
     return (BlockFooter*)((uint8_t*)(h + 1) + h->size);
+}
+
+
+/**
+ * @brief Calculates the CRC32 value.
+ * 
+ * @param data The pointer to the data to calculate the CRC32 checksum value for.
+ * @param len The length of the data.
+ * @return uint32_t The CRC32 checksum value.
+ */
+uint32_t crc32(const void *data, size_t len)
+{
+    const uint8_t *p = (const uint8_t*)data;
+    // The inital CRC value is set to all 1s.
+    uint32_t crc = 0xFFFFFFFFu;
+    while (len--) {
+        // Read the current byte, increment the pointer and XOR the byte into the CRC.
+        crc ^= *p++;
+        // Iterate for every bit in the byte.
+        for (unsigned k = 0; k < 8; k++)
+            /**
+             * @note This line performs polynomial division for the CRC32 calculation. It takes the following steps:
+             * 1. Determines if the least significant bit (LSB) of the current CRC value is 1 or 0 using `(crc & 1)`.
+             * 2. Negates the result to create a mask, either 0x00000000 if the LSB was 0 pr 0xFFFFFFFF if the LSB was 1.
+             * 3. ANDs the mask with the reverse polynomial constant `0xEDB88320u` to either apply the polynomial or not.
+             * 4. Perform a right bit shift on the current CRC value using `crc >> 1`.
+             * 5. XORs the shifted CRC value with the result from step 3 to update the CRC value.
+             */
+            crc = (crc >> 1) ^ (0xEDB88320u & (-(crc & 1)));
+    }
+    // Invert the bits of the final CRC value before returning.
+    return crc ^ 0xFFFFFFFFu;
+}
+
+
+/**
+ * @brief Calculate the CRC32 checksum using the metadata in a block header excluding the CRC32 value.
+ * 
+ * @param h A pointer to the block header.
+ * @return uint32_t The CRC32 checksum.
+ */
+uint32_t get_header_crc(const BlockHeader *h){
+    return crc32(h, sizeof(BlockHeader) - sizeof(uint32_t));
+}
+
+
+/**
+ * @brief Calculate the CRC32 checksum using the metadata in a block footer excluding the CRC32 value.
+ * 
+ * @param h A pointer to the block footer.
+ * @return uint32_t The CRC32 checksum.
+ */
+uint32_t get_footer_crc(const BlockFooter *f){
+    return crc32(f, sizeof(BlockFooter) - sizeof(uint32_t));
 }
 
 
@@ -101,10 +161,18 @@ int is_block_valid(BlockHeader *h){
         return 0;
     }
 
-    //! Header CRC check goes here
+    // Check the block header checksum is consistent with the rest of the metadata.
+    if (h->crc != get_header_crc(h)){
+        printf("Block header checksum inconsistent with header metadata");
+        return 0;
+    }
 
     // Retrieve the footer pointer from the header.
     BlockFooter *f = get_footer(h);
+
+    // Check if the footer is beyond the heap bounds.
+    if ((uint8_t*)f + sizeof(BlockFooter) > g_heap + g_heap_size)
+        return 0;
 
     // Check the footer metadata constant.
     if (f->consistency != BLOCK_FOOTER_CONSISTENCY){
@@ -124,7 +192,11 @@ int is_block_valid(BlockHeader *h){
         return 0;
     }
 
-    //! Footer CRC check goes here
+    // Check the block footer checksum is consistent with the rest of the metadata.
+    if (f->crc != get_footer_crc(f)){
+        printf("Block footer inconsistent with footer size.");
+        return 0;
+    }
 
     // If all the checks have passed, the block is valid.
     return 1;
