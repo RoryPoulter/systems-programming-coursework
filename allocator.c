@@ -209,6 +209,43 @@ int is_block_valid(BlockHeader *h){
 
 /**************************************************************************************************
  * 
+ * Offset <--> Pointer Functions
+ * 
+ *************************************************************************************************/
+
+
+/**
+ * @brief Generates an offset corresponding to a pointer.
+ * 
+ * @param p The pointer.
+ * @return uint32_t The offset corresponding to the pointer.
+ */
+inline uint32_t ptr_to_off(void *p){
+    // Check if a pointer has been passed.
+    if (!p){
+        return 0;
+    }
+    return (uint32_t)((uint8_t*)p - g_heap);
+}
+
+
+/**
+ * @brief Generates a pointer to data located `offset` bytes away.
+ * 
+ * @param offset The offset of the pointer to be generated.
+ * @return void* The pointer corresponding to the offset.
+ */
+inline void* off_to_ptr(uint32_t offset){
+    // Check if the offset is 0 or exceeds the heap size.
+    if (offset == 0 || offset >= g_heap_size){
+        return NULL;
+    }
+    return (void*)(g_heap + offset);
+}
+
+
+/**************************************************************************************************
+ * 
  * Memory Allocator Functions
  * 
  *************************************************************************************************/
@@ -276,7 +313,7 @@ int mm_init(uint8_t *heap, size_t heap_size){
         payload[i] = UNUSED_PATTERN[i % 5];
 
     return 0;
-};
+}
 
 
 /**
@@ -285,7 +322,7 @@ int mm_init(uint8_t *heap, size_t heap_size){
  * @param size The size of the block to be allocated (in bytes).
  * @return void* The aligned payload pointer, or NULL on failure.
  */
-void *mm_malloc(size_t size){};
+void *mm_malloc(size_t size){}
 
 
 /**
@@ -297,7 +334,7 @@ void *mm_malloc(size_t size){};
  * @param len The number of bytes to read from the block.
  * @return int The number of bytes read, or -1 if corruption or invalid pointer detected.
  */
-int mm_read(void *ptr, size_t offset, void *buf, size_t len){};
+int mm_read(void *ptr, size_t offset, void *buf, size_t len){}
 
 
 /**
@@ -309,7 +346,7 @@ int mm_read(void *ptr, size_t offset, void *buf, size_t len){};
  * @param len The number of bytes to write.
  * @return int The number of bytes written, or -1 if corruption or invalid pointer detected.
  */
-int mm_write(void *ptr, size_t offset, const void *src, size_t len){};
+int mm_write(void *ptr, size_t offset, const void *src, size_t len){}
 
 
 /**
@@ -317,7 +354,7 @@ int mm_write(void *ptr, size_t offset, const void *src, size_t len){};
  * 
  * @param ptr The pointer to be freed.
  */
-void mm_free(void *ptr){};
+void mm_free(void *ptr){}
 
 
 /**
@@ -327,11 +364,22 @@ void mm_free(void *ptr){};
  * @param new_size The new size of the block (in bytes).
  * @return void* The pointer to the resized block, or NULL on failure.
  */
-void *mm_realloc(void *ptr, size_t new_size){};
+void *mm_realloc(void *ptr, size_t new_size){}
 
 
 /**
- * @brief Output current heap usage and integrity statistics for debugging
+ * @brief Output current heap usage and integrity statistics for debugging.
  * 
  */
-void mm_heap_stats(void){};
+void mm_heap_stats(void){
+    // Get a pointer to the global header and retrieve the offset to the first block.
+    GlobalHeader *G = (GlobalHeader*)g_heap;
+    uint32_t off = G->first_block;
+
+    // Traverse the heap and print the status (offset, size, state, validity) of each block.
+    while (off) {
+        BlockHeader *h = off_to_ptr(off);
+        printf("Block @%u size=%u state=%u valid=%d\n", off, h->size, h->state, is_block_valid(h));
+        off = h->next;
+    }
+}
