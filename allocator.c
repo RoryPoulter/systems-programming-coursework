@@ -62,6 +62,14 @@ static uint8_t *g_heap = NULL;       // Base pointer
 static size_t   g_heap_size = 0;     // Size of heap memory in bytes
 
 
+BlockFooter* get_footer(BlockHeader *h){
+    if (!h){
+        return NULL;
+    }
+    return (BlockFooter*)((uint8_t*)(h + 1) + h->size);
+}
+
+
 /**
  * @brief Checks the block metadata for validity.
  * 
@@ -81,7 +89,7 @@ int is_block_valid(BlockHeader *h){
         return 0;
     }
 
-    // Check metadata constant
+    // Check the header metadata constant.
     if (h->consistency != BLOCK_HEADER_CONSISTENCY){
         printf("Block header consistency check failed.\n");
         return 0;
@@ -93,7 +101,30 @@ int is_block_valid(BlockHeader *h){
         return 0;
     }
 
-    //! Other checks i.e. CRC, footer
+    //! Header CRC check goes here
+
+    // Retrieve the footer pointer from the header.
+    BlockFooter *f = get_footer(h);
+
+    // Check the footer metadata constant.
+    if (f->consistency != BLOCK_FOOTER_CONSISTENCY){
+        printf("Block footer consistency check failed.\n");
+        return 0;
+    }
+
+    // Check the footer size equals the header size.
+    if (f->size != h->size){
+        printf("Block footer size is inconsistent with header size.");
+        return 0;
+    }
+
+    // Check the footer sequence number equals the header sequence number.
+    if (f->seq != h->seq){
+        printf("Block footer sequence number is inconsistent with header sequence number.\n");
+        return 0;
+    }
+
+    //! Footer CRC check goes here
 
     // If all the checks have passed, the block is valid.
     return 1;
