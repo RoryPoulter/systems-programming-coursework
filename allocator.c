@@ -1,14 +1,18 @@
-/*********************************************************************
+/**************************************************************************************************
  *
  * Includes and Definitions
  * 
- ********************************************************************/
+ *************************************************************************************************/
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include "allocator.h"
+
+
+// Pattern for filling unused space in the heap.
+const uint8_t UNUSED_PATTERN[5] = { 0xC0, 0xDE, 0xF0, 0x0D, 0x55 };
 
 
 // Consistency check constants, referred to as `metadata constants`.
@@ -22,11 +26,11 @@
 #define QUARANTINED 2
 
 
-/*********************************************************************
+/**************************************************************************************************
  *
  * Data Structures
  *
- ********************************************************************/
+ *************************************************************************************************/
 
 // Global header structure stored at the start of the heap.
 typedef struct {
@@ -203,23 +207,74 @@ int is_block_valid(BlockHeader *h){
 }
 
 
-/*********************************************************************
+/**************************************************************************************************
  * 
  * Memory Allocator Functions
  * 
- ********************************************************************/
+ *************************************************************************************************/
 
 
 /**
- * @brief Initialize the allocator over a provided memory block.
+ * @brief Initialize the allocator over a provided memory block. Creates the global header and the
+ * first memory block. Fills the payload with the repeating pattern `0xC0DEF00D55`.
  * 
  * @param heap The base pointer to the heap memory.
  * @param heap_size The number of bytes available in heap.
  * @return int 0 on success, non-zero on failure.
  */
 int mm_init(uint8_t *heap, size_t heap_size){
-    if (!heap || heap_size < 1024)  /* minimum size sanity check */
+    // Check the argument `heap_size` is large enough.
+    if (!heap || heap_size < 1024){
         return -1;
+    }
+    
+    g_heap = heap;
+    g_heap_size = heap_size;
+
+
+    GlobalHeader *G = (GlobalHeader*)g_heap;
+
+    // Detect if the heap already exists.
+    if (G->consistency == GLOBAL_HEADER_CONSISTENCY){
+        return 0;
+    }
+
+    // Initialise a new heap if it does not already exist.
+    memset(heap, 0, heap_size);
+
+    // Set the global header metadata.
+    G->consistency = GLOBAL_HEADER_CONSISTENCY;
+    G->heap_size = heap_size;
+    G->first_block = sizeof(GlobalHeader);
+    G->crc = crc32(G, sizeof(GlobalHeader)-sizeof(uint32_t));
+
+    // Create one giant free block after the global header.
+    BlockHeader *h = (BlockHeader*)(g_heap + G->first_block);
+    h->consistency = BLOCK_HEADER_CONSISTENCY;
+    h->seq   = 1;
+    h->state = FREE;
+    h->prev  = 0;
+    h->next  = 0;
+
+    // Calculate the payload size
+    size_t payload_size = heap_size - sizeof(GlobalHeader) - sizeof(BlockHeader)
+    - sizeof(BlockFooter);
+    h->size = payload_size;
+    h->crc = get_header_crc(h);
+
+    // Build the block footer.
+    BlockFooter *f = get_footer(h);
+    f->consistency = BLOCK_FOOTER_CONSISTENCY;
+    f->size  = h->size;
+    f->seq   = h->seq;
+    f->crc   = footer_crc(f);
+
+    // Get a pointer to the start of the payload.
+    uint8_t *payload = (uint8_t*)(h + 1);
+    // Fill the unused space with the repeating pattern.
+    for (size_t i=0; i < h->size; i++)
+        payload[i] = UNUSED_PATTERN[i % 5];
+
     return 0;
 };
 
