@@ -245,6 +245,28 @@ int is_block_valid(BlockHeader *h){
 }
 
 
+/**
+ * @brief Updates the metadata of a block when it has been corrupted so the
+ * memory allocator will quarantine it.
+ * 
+ * @param h A pointer to the header of the corrupted block.
+ */
+void quarantine_block(BlockHeader *h){
+    // Check for missing input
+    if (!h){
+        return;
+    }
+    // Update header metadata
+    h->state = QUARANTINED;
+    h->seq++;
+    h->crc = get_header_crc(h);
+    // Update footer metadata
+    BlockFooter *f = get_footer(h);
+    f->seq = h->seq;
+    f->crc = get_footer_crc(f);
+}
+
+
 /******************************************************************************
  * 
  * Offset <--> Pointer Functions
@@ -311,7 +333,7 @@ void merge_free_blocks(BlockHeader *h){
                     f_3->seq = h_3->seq;
                     f_3->crc = get_footer_crc(f_3);
                 } else {
-                    //! Need to implement quarantine function
+                    quarantine_block(h_3);
                 }
             }
             // Update the header metadata for the merged block
