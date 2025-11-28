@@ -1,8 +1,8 @@
-/**************************************************************************************************
+/******************************************************************************
  *
  * Includes and Definitions
  * 
- *************************************************************************************************/
+ *****************************************************************************/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,11 +26,11 @@ const uint8_t UNUSED_PATTERN[5] = { 0xC0, 0xDE, 0xF0, 0x0D, 0x55 };
 #define QUARANTINED 2
 
 
-/**************************************************************************************************
+/******************************************************************************
  *
  * Data Structures
  *
- *************************************************************************************************/
+ *****************************************************************************/
 
 // Global header structure stored at the start of the heap.
 typedef struct {
@@ -67,7 +67,8 @@ static size_t   g_heap_size = 0;     // Size of heap memory in bytes
 
 
 /**
- * @brief Get a pointer to the footer from a pointer of the header and the block size.
+ * @brief Get a pointer to the footer from a pointer of the header and the 
+ * block size.
  * 
  * @param h The header pointer.
  * @return * BlockFooter* A pointer to the footer.
@@ -83,7 +84,8 @@ BlockFooter* get_footer(BlockHeader *h){
 /**
  * @brief Calculates the CRC32 value.
  * 
- * @param data The pointer to the data to calculate the CRC32 checksum value for.
+ * @param data The pointer to the data to calculate the CRC32 checksum
+ * value for.
  * @param len The length of the data.
  * @return uint32_t The CRC32 checksum value.
  */
@@ -93,17 +95,24 @@ uint32_t crc32(const void *data, size_t len)
     // The inital CRC value is set to all 1s.
     uint32_t crc = 0xFFFFFFFFu;
     while (len--) {
-        // Read the current byte, increment the pointer and XOR the byte into the CRC.
+        // Read the current byte, increment the pointer and XOR the byte into 
+        // the CRC.
         crc ^= *p++;
         // Iterate for every bit in the byte.
         for (unsigned k = 0; k < 8; k++)
             /**
-             * @note This line performs polynomial division for the CRC32 calculation. It takes the following steps:
-             * 1. Determines if the least significant bit (LSB) of the current CRC value is 1 or 0 using `(crc & 1)`.
-             * 2. Negates the result to create a mask, either 0x00000000 if the LSB was 0 pr 0xFFFFFFFF if the LSB was 1.
-             * 3. ANDs the mask with the reverse polynomial constant `0xEDB88320u` to either apply the polynomial or not.
-             * 4. Perform a right bit shift on the current CRC value using `crc >> 1`.
-             * 5. XORs the shifted CRC value with the result from step 3 to update the CRC value.
+             * @note This line performs polynomial division for the CRC32 
+             * calculation. It takes the following steps:
+             * 1. Determines if the least significant bit (LSB) of the current
+             * CRC value is 1 or 0 using `(crc & 1)`.
+             * 2. Negates the result to create a mask, either 0x00000000 if
+             * the LSB was 0 pr 0xFFFFFFFF if the LSB was 1.
+             * 3. ANDs the mask with the reverse polynomial constant
+             * `0xEDB88320u` to either apply the polynomial or not.
+             * 4. Perform a right bit shift on the current CRC value using
+             * `crc >> 1`.
+             * 5. XORs the shifted CRC value with the result from step 3 to
+             * update the CRC value.
              */
             crc = (crc >> 1) ^ (0xEDB88320u & (-(crc & 1)));
     }
@@ -113,7 +122,8 @@ uint32_t crc32(const void *data, size_t len)
 
 
 /**
- * @brief Calculate the CRC32 checksum using the metadata in a block header excluding the CRC32 value.
+ * @brief Calculate the CRC32 checksum using the metadata in a block header
+ * excluding the CRC32 value.
  * 
  * @param h A pointer to the block header.
  * @return uint32_t The CRC32 checksum.
@@ -124,7 +134,8 @@ uint32_t get_header_crc(const BlockHeader *h){
 
 
 /**
- * @brief Calculate the CRC32 checksum using the metadata in a block footer excluding the CRC32 value.
+ * @brief Calculate the CRC32 checksum using the metadata in a block footer
+ * excluding the CRC32 value.
  * 
  * @param h A pointer to the block footer.
  * @return uint32_t The CRC32 checksum.
@@ -141,38 +152,45 @@ uint32_t get_footer_crc(const BlockFooter *f){
  * @return * int A boolean indicating if the block is valid.
  */
 int is_block_valid(BlockHeader *h){
-    printf("\nChecking if block is valid...\n");
+    printf("=================================================================="
+        "=========\nChecking if block is valid...\n");
     // Check for missing input
-    printf("    Header pointer is not NULL... ");
+    printf("    Header pointer is not NULL...                                 "
+        "      ");
     if (!h){
         printf("[X]\n");
         return 0;
     }
     
-    // Check if header pointer is below that of the heap or beyond the heap bounds.
-    printf("[✓]\n    Header is within the heap bounds... ");
-    if ((uint8_t*)h < g_heap || (uint8_t*)h + sizeof(BlockHeader) > g_heap + g_heap_size){
+    // Check if header pointer is within the heap bounds.
+    printf("[✓]\n    Header is within the heap bounds...                      "
+        "           ");
+    if ((uint8_t*)h < g_heap || (uint8_t*)h + sizeof(BlockHeader) > 
+    g_heap + g_heap_size){
         printf("[x]]\n");
         return 0;
     }
 
     // Check the header metadata constant.
-    printf("[✓]\n    Header metadata constant is consistent... ");
+    printf("[✓]\n    Header metadata constant is consistent...                "
+        "           ");
     if (h->consistency != BLOCK_HEADER_CONSISTENCY){
         printf("[X]\n");
         return 0;
     }
 
     // Check the block size does not exceed the heap size.
-    printf("[✓]\n    Block is smaller than heap... ");
+    printf("[✓]\n    Block is smaller than heap...                            "
+        "           ");
     if (h->size > g_heap_size){
         printf("[X]\n");
         return 0;
     }
 
-    // Check the block header checksum is consistent with the rest of the metadata.
-    printf("[✓]\n    Header checksum is valid... ");
-    if (h->crc != get_header_crc(h)){
+    // Check the block header checksum is consistent.
+    printf("[✓]\n    Header checksum is valid...                              "
+        "           ");
+    if (h->crc != header_crc(h)){
         printf("[X]\n");
         return 0;
     }
@@ -181,51 +199,57 @@ int is_block_valid(BlockHeader *h){
     BlockFooter *f = get_footer(h);
 
     // Check if the footer is beyond the heap bounds.
-    printf("[✓]\n    Footer is within the heap... ");
+    printf("[✓]\n    Footer is within the heap...                             "
+        "           ");
     if ((uint8_t*)f + sizeof(BlockFooter) > g_heap + g_heap_size){
         printf("[X]\n");
         return 0;
     }
 
     // Check the footer metadata constant.
-    printf("[✓]\n    Footer metadata constant is consistent... ");
+    printf("[✓]\n    Footer metadata constant is consistent...                "
+        "           ");
     if (f->consistency != BLOCK_FOOTER_CONSISTENCY){
         printf("[X]\n");
         return 0;
     }
 
     // Check the footer size equals the header size.
-    printf("[✓]\n    Footer size is consistent with header size... ");
+    printf("[✓]\n    Footer size is consistent with header size...            "
+        "           ");
     if (f->size != h->size){
         printf("[X]\n");
         return 0;
     }
 
     // Check the footer sequence number equals the header sequence number.
-    printf("[✓]\n    Footer sequence number is consistent with header sequence number...");
+    printf("[✓]\n    Footer sequence number is consistent with header sequence"
+        " number... ");
     if (f->seq != h->seq){
         printf("[X]\n");
         return 0;
     }
 
-    // Check the block footer checksum is consistent with the rest of the metadata.
-    printf("[✓]\n    Footer checksum is valid... ");
-    if (f->crc != get_footer_crc(f)){
+    // Check the block footer checksum is consistent.
+    printf("[✓]\n    Footer checksum is valid...                              "
+        "           ");
+    if (f->crc != footer_crc(f)){
         printf("[X]\n");
         return 0;
     }
 
     // If all the checks have passed, the block is valid.
-    printf("[✓]\nAll tests passed (10/10), block is valid!\n");
+    printf("[✓]\nAll tests passed (10/10), block is valid!\n=================="
+        "=========================================================\n");
     return 1;
 }
 
 
-/**************************************************************************************************
+/******************************************************************************
  * 
  * Offset <--> Pointer Functions
  * 
- *************************************************************************************************/
+ *****************************************************************************/
 
 
 /**
@@ -258,11 +282,11 @@ inline void* off_to_ptr(uint32_t offset){
 }
 
 
-/**************************************************************************************************
+/******************************************************************************
  * 
  * Memory Allocator Functions
  * 
- *************************************************************************************************/
+ *****************************************************************************/
 
 
 /**
@@ -346,7 +370,8 @@ void *mm_malloc(size_t size){}
  * @param offset The offset within the block to read from.
  * @param buf The pointer to the buffer to store read data.
  * @param len The number of bytes to read from the block.
- * @return int The number of bytes read, or -1 if corruption or invalid pointer detected.
+ * @return int The number of bytes read, or -1 if corruption or invalid pointer
+ * detected.
  */
 int mm_read(void *ptr, size_t offset, void *buf, size_t len){}
 
@@ -358,13 +383,15 @@ int mm_read(void *ptr, size_t offset, void *buf, size_t len){}
  * @param offset The offset within the block to start writing.
  * @param src The pointer to the source data to write.
  * @param len The number of bytes to write.
- * @return int The number of bytes written, or -1 if corruption or invalid pointer detected.
+ * @return int The number of bytes written, or -1 if corruption or invalid
+ * pointer detected.
  */
 int mm_write(void *ptr, size_t offset, const void *src, size_t len){}
 
 
 /**
- * @brief Free a previously-allocated pointer (ignore NULL). Must detect double-free.
+ * @brief Free a previously-allocated pointer (ignore NULL). Must detect
+ * double-free.
  * 
  * @param ptr The pointer to be freed.
  */
@@ -372,7 +399,8 @@ void mm_free(void *ptr){}
 
 
 /**
- * @brief Resize a previously allocated block to new_size bytes, preserving data.
+ * @brief Resize a previously allocated block to new_size bytes, preserving
+ * data.
  * 
  * @param ptr The pointer to the block to be resized.
  * @param new_size The new size of the block (in bytes).
@@ -386,14 +414,19 @@ void *mm_realloc(void *ptr, size_t new_size){}
  * 
  */
 void mm_heap_stats(void){
-    // Get a pointer to the global header and retrieve the offset to the first block.
+    // Get a pointer to the global header
     GlobalHeader *G = (GlobalHeader*)g_heap;
+    // The offset to the first block to begin the traversal
     uint32_t off = G->first_block;
 
-    // Traverse the heap and print the status (offset, size, state, validity) of each block.
+    // Traverse the heap and print the status of each block.
     while (off) {
         BlockHeader *h = off_to_ptr(off);
-        printf("Block stats:\n   Offset = %u\n    Size = %u\n    State = %u\n    Valid = %d\n", off, h->size, h->state, is_block_valid(h));
+        printf("Block stats:\n"
+            "    Offset = %u\n"
+            "    Size = %u\n"
+            "    State = %u\n"
+            "    Valid = %d\n", off, h->size, h->state, is_block_valid(h));
         off = h->next;
     }
 }
