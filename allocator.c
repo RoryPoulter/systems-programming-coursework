@@ -282,6 +282,65 @@ inline void* off_to_ptr(uint32_t offset){
 }
 
 
+/**
+ * @brief Merges adjacent free valid blocks into one contiguous block.
+ * 
+ * @param h A pointer to the newly freed block.
+ */
+void merge_free_blocks(BlockHeader *h){
+    // If there is a block after h
+    if (h->next){
+        // Convert the offset to a pointer to the second block
+        BlockHeader *h_2 = off_to_ptr(h->next);
+        // If the second block is valid and free
+        if (is_block_valid(h_2) && h_2->state == FREE){
+            // Update block 1 metadata
+            h->size = sizeof(BlockHeader) + sizeof(BlockFooter) + h_2->size;
+            h->next = h_2->next;
+
+            // If there is a block after the second block
+            if (h_2->next){
+                // Convert the offset to a pointer to the third block
+                BlockHeader *h_3 = off_to_ptr(h_2->next);
+                // If the third block is valid
+                if (is_block_valid(h_3)){
+                    h_3->prev = ptr_to_off(h);
+                    h_3->crc = get_header_crc(h_3);
+                    // Get the footer of the third block
+                    BlockFooter *f_3 = get_footer(h_3);
+                    f_3->seq = h_3->seq;
+                    f_3->crc = get_footer_crc(f_3);
+                } else {
+                    //! Need to implement quarantine function
+                }
+            }
+            // Update the header metadata for the merged block
+            h->seq++;
+            h->crc = get_header_crc(h);
+
+            // Update the footer metadata for the merged block
+            BlockFooter *f = get_footer(h);
+            f->consistency = BLOCK_FOOTER_CONSISTENCY;
+            f->size = h->size;
+            f->seq = h->seq;
+            f->crc = get_footer_crc(f);
+        }
+    }
+    /**
+     * @note Recursive call: if the previous block is free and valid, the
+     * function would will be called recursively with the previous block. This
+     * will merge it with the recently merged block. This repeats until a block
+     * is found that cannot be merged.
+     */
+    if (h->prev){
+        BlockHeader *p = ptr_to_off(h->prev);
+        if (is_block_valid(p) && p->state == FREE){
+            merge_free_blocks(p);
+        }
+    }
+}
+
+
 /******************************************************************************
  * 
  * Memory Allocator Functions
