@@ -1,7 +1,7 @@
 /******************************************************************************
  *
  * Includes and Definitions
- * 
+ *
  *****************************************************************************/
 
 #include <stdio.h>
@@ -28,7 +28,7 @@ const uint8_t UNUSED_PATTERN[5] = { 0xC0, 0xDE, 0xF0, 0x0D, 0x55 };
 
 /******************************************************************************
  *
- * Data Structures
+ * Data Structures and Related Functions
  *
  *****************************************************************************/
 
@@ -363,6 +363,48 @@ void merge_free_blocks(BlockHeader *h){
 }
 
 
+/**
+ * @brief Finds the block which a pointer falls within the bounds of.
+ * 
+ * @param ptr The pointer to identify the block for.
+ * @return BlockHeader* A pointer to the header of the block if found, or NULL.
+ */
+BlockHeader* ptr_to_block(void* ptr){
+    // Check for missing input.
+    if (!ptr){
+        return NULL;
+    }
+    uint8_t *p = ptr;
+    // Check for out of bounds pointer.
+    if (p < g_heap || p >= g_heap + g_heap_size){
+        return NULL;
+    }
+    GlobalHeader *G = (GlobalHeader*)g_heap;
+    uint32_t off = G->first_block;
+
+    // Traverses the linked list.
+    while (off) {
+        // Get the header of the current block from the offset.
+        BlockHeader *h = off_to_ptr(off);
+        // If the block is invalid, quarantine and move on.
+        if (!block_is_valid(h)) {
+            quarantine_block(h);
+            off = h->next;
+            continue;
+        }
+        // Initialise pointers for start and end of payload.
+        uint8_t *start = (uint8_t*)(h+1);
+        uint8_t *end = start + h->size;
+        // Check if the pointer falls within the payload.
+        if (p >= start && p < end && h->state==USED)
+            return h;
+        off = h->next;
+    }
+    // If the pointer lies within the heap, but in a free or quarantined block.
+    return NULL;
+}
+
+
 /******************************************************************************
  * 
  * Memory Allocator Functions
@@ -454,7 +496,18 @@ void *mm_malloc(size_t size){}
  * @return int The number of bytes read, or -1 if corruption or invalid pointer
  * detected.
  */
-int mm_read(void *ptr, size_t offset, void *buf, size_t len){}
+int mm_read(void *ptr, size_t offset, void *buf, size_t len){
+    BlockHeader *h = ptr_to_block(ptr);
+    // If `h` is a NULL pointer or if the data to be read exceeds the payload.
+    if (!h || offset+len > h->size){
+        return -1;
+    }
+    //? No need to validate the block as this is implied by reaching here.
+    // Copy the data from the block payload.
+    memcpy(buf,(uint8_t*)(h+1)+offset,len);
+    // Return the number of bytes read.
+    return (int)len;
+}
 
 
 /**
