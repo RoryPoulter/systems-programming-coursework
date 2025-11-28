@@ -269,7 +269,7 @@ void quarantine_block(BlockHeader *h){
 
 /******************************************************************************
  * 
- * Offset <--> Pointer Functions
+ * Memory Allocation Helper Functions
  * 
  *****************************************************************************/
 
@@ -505,7 +505,6 @@ int mm_read(void *ptr, size_t offset, void *buf, size_t len){
     //? No need to validate the block as this is implied by reaching here.
     // Copy the data from the block payload.
     memcpy(buf,(uint8_t*)(h+1)+offset,len);
-    // Return the number of bytes read.
     return (int)len;
 }
 
@@ -520,7 +519,22 @@ int mm_read(void *ptr, size_t offset, void *buf, size_t len){
  * @return int The number of bytes written, or -1 if corruption or invalid
  * pointer detected.
  */
-int mm_write(void *ptr, size_t offset, const void *src, size_t len){}
+int mm_write(void *ptr, size_t offset, const void *src, size_t len){
+    BlockHeader *h = ptr_to_block(ptr);
+    // If `h` is a NULL pointer or if the data to be read exceeds the payload.
+    if (!h || offset+len > h->size){
+        return -1;
+    }
+    //? No need to validate the block as this is implied by reaching here.
+    memcpy((uint8_t*)(h+1)+offset, src, len);
+    // Update the block metadata.
+    h->seq++;
+    h->crc = header_crc(h);
+    BlockFooter *f = get_footer(h);
+    f->seq = h->seq;
+    f->crc = footer_crc(f);
+    return (int)len;
+}
 
 
 /**
