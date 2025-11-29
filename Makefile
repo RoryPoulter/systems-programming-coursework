@@ -1,20 +1,48 @@
-# Compiles all the necessary source files and headers that you submit and creates
-# an a library called `allocator.so` and a testing executable called `runme`
-all: allocator.c allocator.h
-# 	Source - https://stackoverflow.com/questions/14884126/build-so-file-from-c-file-using-gcc-command-line
-# 	Posted by dreamcrash, modified by community. See post 'Timeline' for change history
-# 	Retrieved 2025-11-24, License - CC BY-SA 3.0
-	gcc -shared -o liballocator.so -fPIC allocator.c allocator.h
+CC      = gcc
+CFLAGS  = -Wall -Wextra -Werror -fPIC
+LDFLAGS = -shared
+
+# Source files
+ALLOC_SRC = allocator.c
+ALLOC_OBJ = allocator.o
+LIB       = liballocator.so
+
+RUNME_SRC = runme.c
+RUNME_EXE = runme
 
 
-# Tests the program with expected data
-test:
-	./runme
+# Default target
+all: $(LIB) $(RUNME_EXE)
 
-# Cleans the compile environment
+
+# Build shared library: liballocator.so
+$(ALLOC_OBJ): $(ALLOC_SRC) allocator.h
+	$(CC) $(CFLAGS) -c $(ALLOC_SRC) -o $(ALLOC_OBJ)
+
+$(LIB): $(ALLOC_OBJ)
+	$(CC) $(LDFLAGS) -o $(LIB) $(ALLOC_OBJ)
+
+
+# Build runme executable
+$(RUNME_EXE): $(RUNME_SRC) allocator.h $(LIB)
+	$(CC) -Wall -Wextra -Werror $(RUNME_SRC) -L. -lallocator -o $(RUNME_EXE)
+
+
+# "runme" target — runs the runme executable
+# (PHONY so it doesn't conflict with the file named runme)
+run: $(RUNME_EXE)
+	LD_LIBRARY_PATH=. ./runme --seed 1 --storm 0 --size 2048
+
+
+# Test target — identical or more advanced tests
+test: $(RUNME_EXE)
+	LD_LIBRARY_PATH=. ./runme --seed 123 --storm 1 --size 4096
+
+
+# Clean target
 clean:
-	rm -f allocator.so runme
+	rm -f $(ALLOC_OBJ) $(LIB) $(RUNME_EXE)
 
 
-runme:
-	gcc -o runme runme.c -L. -liballocator
+# Phony targets to avoid conflict with files
+.PHONY: all clean test run
