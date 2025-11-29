@@ -193,7 +193,7 @@ int is_block_valid(BlockHeader *h){
     // Check the block header checksum is consistent.
     printf("[✓]\n    Header checksum is valid...                              "
         "           ");
-    if (h->crc != header_crc(h)){
+    if (h->crc != get_header_crc(h)){
         printf("[X]\n");
         return 0;
     }
@@ -236,7 +236,7 @@ int is_block_valid(BlockHeader *h){
     // Check the block footer checksum is consistent.
     printf("[✓]\n    Footer checksum is valid...                              "
         "           ");
-    if (f->crc != footer_crc(f)){
+    if (f->crc != get_footer_crc(f)){
         printf("[X]\n");
         return 0;
     }
@@ -283,7 +283,7 @@ void quarantine_block(BlockHeader *h){
  * @param p The pointer.
  * @return uint32_t The offset corresponding to the pointer.
  */
-inline uint32_t ptr_to_off(void *p){
+static inline uint32_t ptr_to_off(void *p){
     // Check if a pointer has been passed.
     if (!p){
         return 0;
@@ -298,7 +298,7 @@ inline uint32_t ptr_to_off(void *p){
  * @param offset The offset of the pointer to be generated.
  * @return void* The pointer corresponding to the offset.
  */
-inline void* off_to_ptr(uint32_t offset){
+static inline void* off_to_ptr(uint32_t offset){
     // Check if the offset is 0 or exceeds the heap size.
     if (offset == 0 || offset >= g_heap_size){
         return NULL;
@@ -358,7 +358,7 @@ void merge_free_blocks(BlockHeader *h){
      * is found that cannot be merged.
      */
     if (h->prev){
-        BlockHeader *p = ptr_to_off(h->prev);
+        BlockHeader *p = off_to_ptr(h->prev);
         if (is_block_valid(p) && p->state == FREE){
             merge_free_blocks(p);
         }
@@ -390,7 +390,7 @@ BlockHeader* ptr_to_block(void* ptr){
         // Get the header of the current block from the offset.
         BlockHeader *h = off_to_ptr(off);
         // If the block is invalid, quarantine and move on.
-        if (!block_is_valid(h)) {
+        if (!is_block_valid(h)) {
             quarantine_block(h);
             off = h->next;
             continue;
@@ -424,13 +424,13 @@ void split_block(BlockHeader* h, size_t needed){
     // Update the old block metadata
     h->size = needed;
     h->seq++;
-    h->crc = header_crc(h);
+    h->crc = get_header_crc(h);
     BlockFooter *f = get_footer(h);
     f->size = h->size;
     f->consistency = BLOCK_FOOTER_CONSISTENCY;
     f->size = h->size;
     f->seq = h->seq;
-    f->crc = footer_crc(f);
+    f->crc = get_footer_crc(f);
 
     // Place the new block after the old block
     uint8_t *new_h_ptr = (uint8_t*)f + sizeof(BlockFooter);
@@ -442,22 +442,22 @@ void split_block(BlockHeader* h, size_t needed){
     new_h->size = leftover - sizeof(BlockHeader) - sizeof(BlockFooter);
     new_h->prev = ptr_to_off(h);
     new_h->next = h->next;
-    new_h->crc = header_crc(new_h);
+    new_h->crc = get_header_crc(new_h);
     BlockFooter *new_f = get_footer(new_h);
     new_f->consistency = BLOCK_FOOTER_CONSISTENCY;
     new_f->size = new_h->size;
     new_f->seq = new_h->seq;
-    new_f->crc = footer_crc(new_f);
+    new_f->crc = get_footer_crc(new_f);
 
     // If the old block had a next block
     if (h->next) {
         BlockHeader *next_h = off_to_ptr(h->next);
-        if (block_is_valid(next_h)) {
+        if (is_block_valid(next_h)) {
             next_h->prev = ptr_to_off(new_h);
-            next_h->crc = header_crc(next_h);
+            next_h->crc = get_header_crc(next_h);
             BlockFooter *next_f = get_footer(next_h);
             next_f->seq = next_h->seq;
-            next_f->crc = footer_crc(next_f);
+            next_f->crc = get_footer_crc(next_f);
         } else {
             quarantine_block(next_h);
         }
@@ -512,10 +512,10 @@ int mm_init(uint8_t *heap, size_t heap_size){
     // Create one giant free block after the global header.
     BlockHeader *h = (BlockHeader*)(g_heap + G->first_block);
     h->consistency = BLOCK_HEADER_CONSISTENCY;
-    h->seq   = 1;
+    h->seq = 1;
     h->state = FREE;
-    h->prev  = 0;
-    h->next  = 0;
+    h->prev = 0;
+    h->next = 0;
 
     // Calculate the payload size
     size_t payload_size = heap_size - sizeof(GlobalHeader) - sizeof(BlockHeader)
@@ -526,9 +526,9 @@ int mm_init(uint8_t *heap, size_t heap_size){
     // Build the block footer.
     BlockFooter *f = get_footer(h);
     f->consistency = BLOCK_FOOTER_CONSISTENCY;
-    f->size  = h->size;
-    f->seq   = h->seq;
-    f->crc   = footer_crc(f);
+    f->size = h->size;
+    f->seq = h->seq;
+    f->crc = get_footer_crc(f);
 
     // Get a pointer to the start of the payload.
     uint8_t *payload = (uint8_t*)(h + 1);
@@ -560,7 +560,7 @@ void *mm_malloc(size_t size){
     while (off) {
         BlockHeader *h = off_to_ptr(off);
         // If the block is invalid, quarantine and move on.
-        if (!block_is_valid(h)){
+        if (!is_block_valid(h)){
             quarantine_block(h);
             off = h->next;
             continue;
@@ -572,11 +572,11 @@ void *mm_malloc(size_t size){
             // Update the block metadata.
             h->state = USED;
             h->seq++;
-            h->crc = header_crc(h);
+            h->crc = get_header_crc(h);
             BlockFooter *f = get_footer(h);
             f->seq = h->seq;
             f->size = h->size;
-            f->crc = footer_crc(f);
+            f->crc = get_footer_crc(f);
             // Return the pointer to the block.
             return (void*)(h+1);
         }
@@ -630,10 +630,10 @@ int mm_write(void *ptr, size_t offset, const void *src, size_t len){
     memcpy((uint8_t*)(h+1)+offset, src, len);
     // Update the block metadata.
     h->seq++;
-    h->crc = header_crc(h);
+    h->crc = get_header_crc(h);
     BlockFooter *f = get_footer(h);
     f->seq = h->seq;
-    f->crc = footer_crc(f);
+    f->crc = get_footer_crc(f);
     return (int)len;
 }
 
@@ -661,11 +661,11 @@ void mm_free(void *ptr){
     // Update block metadata.
     h->state = FREE;
     h->seq++;
-    h->crc = header_crc(h);
+    h->crc = get_header_crc(h);
     BlockFooter *f = get_footer(h);
     f->seq = h->seq;
     f->size = h->size;
-    f->crc = footer_crc(f);
+    f->crc = get_footer_crc(f);
     // Refill payload with repeating pattern.
     uint8_t *payload = (uint8_t*)(h+1);
     for (size_t i = 0; i < h->size; i++){
