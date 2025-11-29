@@ -14,13 +14,16 @@
 // Pattern for filling unused space in the heap.
 const uint8_t UNUSED_PATTERN[5] = { 0xC0, 0xDE, 0xF0, 0x0D, 0x55 };
 
+// Alignment constant and function.
+#define ALIGN 40
+#define ALIGN_UP(x) (((x) + (ALIGN-1)) / ALIGN * ALIGN)
 
 // Consistency check constants, referred to as `metadata constants`.
 #define GLOBAL_HEADER_CONSISTENCY 0xDEADCE11
 #define BLOCK_HEADER_CONSISTENCY 0xC0DEBA5E
 #define BLOCK_FOOTER_CONSISTENCY 0xBAD1DEA5
 
-// Block states
+// Block states.
 #define FREE 0
 #define USED 1
 #define QUARANTINED 2
@@ -405,6 +408,66 @@ BlockHeader* ptr_to_block(void* ptr){
 }
 
 
+/**
+ * @brief Splits a block into two parts and sets the new partition to `FREE`
+ * 
+ * @param h A pointer to the block to split
+ * @param needed The size of the block to be split
+ */
+void split_block(BlockHeader* h, size_t needed){
+    size_t leftover = h->size - needed;
+    // Check the block can fit the needed size
+    if (leftover < sizeof(BlockHeader)+sizeof(BlockFooter)+ALIGN){
+        return;
+    }
+
+    // Update the old block metadata
+    h->size = needed;
+    h->seq++;
+    h->crc = header_crc(h);
+    BlockFooter *f = get_footer(h);
+    f->size = h->size;
+    f->consistency = BLOCK_FOOTER_CONSISTENCY;
+    f->size = h->size;
+    f->seq = h->seq;
+    f->crc = footer_crc(f);
+
+    // Place the new block after the old block
+    uint8_t *new_h_ptr = (uint8_t*)f + sizeof(BlockFooter);
+    BlockHeader *new_h = (BlockHeader*)new_h_ptr;
+    // Set the default metadata values
+    new_h->consistency = BLOCK_HEADER_CONSISTENCY;
+    new_h->seq = 1;
+    new_h->state = FREE;
+    new_h->size = leftover - sizeof(BlockHeader) - sizeof(BlockFooter);
+    new_h->prev = ptr_to_off(h);
+    new_h->next = h->next;
+    new_h->crc = header_crc(new_h);
+    BlockFooter *new_f = get_footer(new_h);
+    new_f->consistency = BLOCK_FOOTER_CONSISTENCY;
+    new_f->size = new_h->size;
+    new_f->seq = new_h->seq;
+    new_f->crc = footer_crc(new_f);
+
+    // If the old block had a next block
+    if (h->next) {
+        BlockHeader *next_h = off_to_ptr(h->next);
+        if (block_is_valid(next_h)) {
+            next_h->prev = ptr_to_off(new_h);
+            next_h->crc = header_crc(next_h);
+            BlockFooter *next_f = get_footer(next_h);
+            next_f->seq = next_h->seq;
+            next_f->crc = footer_crc(next_f);
+        } else {
+            quarantine_block(next_h);
+        }
+    }
+
+    // Set the `next` block to the new block
+    h->next = ptr_to_off(new_h);
+}
+
+
 /******************************************************************************
  * 
  * Memory Allocator Functions
@@ -483,7 +546,45 @@ int mm_init(uint8_t *heap, size_t heap_size){
  * @param size The size of the block to be allocated (in bytes).
  * @return void* The aligned payload pointer, or NULL on failure.
  */
-void *mm_malloc(size_t size){}
+void *mm_malloc(size_t size){
+// If there is no heap or the size is zero, fail safely.
+    if (!g_heap || size==0){
+        return NULL;
+    }
+    // Align the size to the 40-byte alignment.
+    size = ALIGN_UP(size);
+    // Get the offset of the first block.
+    GlobalHeader *G = (GlobalHeader*)g_heap;
+    uint32_t off = G->first_block;
+
+    while (off) {
+        BlockHeader *h = off_to_ptr(off);
+        // If the block is invalid, quarantine and move on.
+        if (!block_is_valid(h)){
+            quarantine_block(h);
+            off = h->next;
+            continue;
+        }
+        // If the block is free and not smaller than `size`, allocate.
+        if (h->state == FREE && h->size >= size){
+            // Split the current block to a partition of the correct size.
+            split_block(h,size);
+            // Update the block metadata.
+            h->state = USED;
+            h->seq++;
+            h->crc = header_crc(h);
+            BlockFooter *f = get_footer(h);
+            f->seq = h->seq;
+            f->size = h->size;
+            f->crc = footer_crc(f);
+            // Return the pointer to the block.
+            return (void*)(h+1);
+        }
+        off = h->next;
+    }
+    // No blocks are free, fail safely.
+    return NULL;
+}
 
 
 /**
@@ -538,12 +639,40 @@ int mm_write(void *ptr, size_t offset, const void *src, size_t len){
 
 
 /**
- * @brief Free a previously-allocated pointer (ignore NULL). Must detect
+ * @brief Free a previously-allocated block (ignore NULL). Must detect
  * double-free.
  * 
- * @param ptr The pointer to be freed.
+ * @param ptr A pointer to the block to be freed.
  */
-void mm_free(void *ptr){}
+void mm_free(void *ptr){
+    // Check for missing input.
+    if (!ptr){
+        return;
+    }
+    BlockHeader *h = ptr_to_block(ptr);
+    if (!h){
+        return;
+    }
+    // Check if the block is free or quarantined. Prevents double-free.
+    if (h->state!=USED){
+        quarantine_block(h);
+        return;
+    }
+    // Update block metadata.
+    h->state = FREE;
+    h->seq++;
+    h->crc = header_crc(h);
+    BlockFooter *f = get_footer(h);
+    f->seq = h->seq;
+    f->size = h->size;
+    f->crc = footer_crc(f);
+    // Refill payload with repeating pattern.
+    uint8_t *payload = (uint8_t*)(h+1);
+    for (size_t i = 0; i < h->size; i++){
+        payload[i]=UNUSED_PATTERN[i%5];
+    }
+    merge_free_blocks(h);
+}
 
 
 /**
@@ -554,7 +683,32 @@ void mm_free(void *ptr){}
  * @param new_size The new size of the block (in bytes).
  * @return void* The pointer to the resized block, or NULL on failure.
  */
-void *mm_realloc(void *ptr, size_t new_size){}
+void *mm_realloc(void *ptr, size_t new_size){
+    // If there is no pointer, allocate a block of size `new_size`.
+    if (!ptr){
+        return mm_malloc(new_size);
+    }
+    BlockHeader *h = ptr_to_block(ptr);
+    if (!h){
+        return NULL;
+    }
+    // Align the size to the 40-byte alignment.
+    new_size = ALIGN_UP(new_size);
+    // If the new size is smaller than the existing block, return the pointer.
+    if (new_size <= h->size){
+        return ptr;
+    }
+
+    // Allocate a new larger block.
+    void *p2 = mm_malloc(new_size);
+    if (!p2){
+        return NULL;
+    }
+    // Copy the old data and free the old block.
+    mm_write(p2,0,(uint8_t*)(h+1),h->size);
+    mm_free(ptr);
+    return p2;
+}
 
 
 /**
