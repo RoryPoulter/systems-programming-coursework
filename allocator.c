@@ -155,46 +155,46 @@ uint32_t get_footer_crc(const BlockFooter *f){
  * @return * int A boolean indicating if the block is valid.
  */
 int is_block_valid(BlockHeader *h){
-    printf("=================================================================="
-        "=========\nChecking if block is valid...\n");
+    // printf("=================================================================="
+    //     "=========\nChecking if block is valid...\n");
     // Check for missing input
-    printf("    Header pointer is not NULL...                                 "
-        "      ");
+    // printf("    Header pointer is not NULL...                                 "
+    //     "      ");
     if (!h){
-        printf("[X]\n");
+        // printf("[X]\n");
         return 0;
     }
     
     // Check if header pointer is within the heap bounds.
-    printf("[✓]\n    Header is within the heap bounds...                      "
-        "           ");
+    // printf("[✓]\n    Header is within the heap bounds...                      "
+    //     "           ");
     if ((uint8_t*)h < g_heap || (uint8_t*)h + sizeof(BlockHeader) > 
     g_heap + g_heap_size){
-        printf("[x]]\n");
+        // printf("[x]]\n");
         return 0;
     }
 
     // Check the header metadata constant.
-    printf("[✓]\n    Header metadata constant is consistent...                "
-        "           ");
+    // printf("[✓]\n    Header metadata constant is consistent...                "
+    //     "           ");
     if (h->consistency != BLOCK_HEADER_CONSISTENCY){
-        printf("[X]\n");
+        // printf("[X]\n");
         return 0;
     }
 
     // Check the block size does not exceed the heap size.
-    printf("[✓]\n    Block is smaller than heap...                            "
-        "           ");
+    // printf("[✓]\n    Block is smaller than heap...                            "
+    //     "           ");
     if (h->size > g_heap_size){
-        printf("[X]\n");
+        // printf("[X]\n");
         return 0;
     }
 
     // Check the block header checksum is consistent.
-    printf("[✓]\n    Header checksum is valid...                              "
-        "           ");
+    // printf("[✓]\n    Header checksum is valid...                              "
+    //     "           ");
     if (h->crc != get_header_crc(h)){
-        printf("[X]\n");
+        // printf("[X]\n");
         return 0;
     }
 
@@ -202,48 +202,48 @@ int is_block_valid(BlockHeader *h){
     BlockFooter *f = get_footer(h);
 
     // Check if the footer is beyond the heap bounds.
-    printf("[✓]\n    Footer is within the heap...                             "
-        "           ");
+    // printf("[✓]\n    Footer is within the heap...                             "
+    //     "           ");
     if ((uint8_t*)f + sizeof(BlockFooter) > g_heap + g_heap_size){
-        printf("[X]\n");
+        // printf("[X]\n");
         return 0;
     }
 
     // Check the footer metadata constant.
-    printf("[✓]\n    Footer metadata constant is consistent...                "
-        "           ");
+    // printf("[✓]\n    Footer metadata constant is consistent...                "
+    //     "           ");
     if (f->consistency != BLOCK_FOOTER_CONSISTENCY){
-        printf("[X]\n");
+        // printf("[X]\n");
         return 0;
     }
 
     // Check the footer size equals the header size.
-    printf("[✓]\n    Footer size is consistent with header size...            "
-        "           ");
+    // printf("[✓]\n    Footer size is consistent with header size...            "
+    //     "           ");
     if (f->size != h->size){
-        printf("[X]\n");
+        // printf("[X]\n");
         return 0;
     }
 
     // Check the footer sequence number equals the header sequence number.
-    printf("[✓]\n    Footer sequence number is consistent with header sequence"
-        " number... ");
+    // printf("[✓]\n    Footer sequence number is consistent with header sequence"
+    //     " number... ");
     if (f->seq != h->seq){
-        printf("[X]\n");
+        // printf("[X]\n");
         return 0;
     }
 
     // Check the block footer checksum is consistent.
-    printf("[✓]\n    Footer checksum is valid...                              "
-        "           ");
+    // printf("[✓]\n    Footer checksum is valid...                              "
+    //     "           ");
     if (f->crc != get_footer_crc(f)){
-        printf("[X]\n");
+        // printf("[X]\n");
         return 0;
     }
 
     // If all the checks have passed, the block is valid.
-    printf("[✓]\nAll tests passed (10/10), block is valid!\n=================="
-        "=========================================================\n");
+    // printf("[✓]\nAll tests passed (10/10), block is valid!\n=================="
+    //     "=========================================================\n");
     return 1;
 }
 
