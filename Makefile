@@ -18,9 +18,12 @@ liballocator.so: allocator.o
 	$(CC) $(LDFLAGS) -o liballocator.so allocator.o
 
 
+runme.o: runme.c
+	$(CC) $(CFLAGS) -c runme.c -o runme.o
+
 # Build runme executable
-$(RUNME_EXE): runme.c allocator.h liballocator.so
-	$(CC) -Wall -Wextra -Werror runme.c -L. -lallocator -o $(RUNME_EXE)
+$(RUNME_EXE): runme.o allocator.h liballocator.so
+	$(CC) -o runme runme.o -L. -lallocator -Wl,-rpath,'./'
 
 
 # "runme" target — runs the runme executable
@@ -36,7 +39,7 @@ test: $(RUNME_EXE)
 
 # Clean target
 clean:
-	rm -f allocator.o liballocator.so runme
+	rm -f allocator.o runme.o liballocator.so runme
 
 
 # Phony targets to avoid conflict with files
