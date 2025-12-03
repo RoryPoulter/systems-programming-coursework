@@ -1,3 +1,7 @@
+// Copyright 2025 Rory Poulter
+#ifndef ALLOCATOR_H_
+#endif  // ALLOCATOR_H_
+#define ALLOCATOR_H_
 #include <stddef.h>
 #include <stdint.h>
 

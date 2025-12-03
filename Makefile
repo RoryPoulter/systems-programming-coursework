@@ -3,11 +3,6 @@ CFLAGS  = -Wall -Wextra -Werror -fPIC
 LDFLAGS = -shared
 
 # Source files
-ALLOC_SRC = allocator.c
-ALLOC_OBJ = allocator.o
-LIB       = liballocator.so
-
-RUNME_SRC = runme.c
 RUNME_EXE = runme
 
 
@@ -16,16 +11,16 @@ all: $(LIB) $(RUNME_EXE)
 
 
 # Build shared library: liballocator.so
-$(ALLOC_OBJ): $(ALLOC_SRC) allocator.h
-	$(CC) $(CFLAGS) -c $(ALLOC_SRC) -o $(ALLOC_OBJ)
+allocator.o: allocator.c allocator.h
+	$(CC) $(CFLAGS) -c allocator.c -o allocator.o
 
-$(LIB): $(ALLOC_OBJ)
-	$(CC) $(LDFLAGS) -o $(LIB) $(ALLOC_OBJ)
+liballocator.so: allocator.o
+	$(CC) $(LDFLAGS) -o liballocator.so allocator.o
 
 
 # Build runme executable
-$(RUNME_EXE): $(RUNME_SRC) allocator.h $(LIB)
-	$(CC) -Wall -Wextra -Werror $(RUNME_SRC) -L. -lallocator -o $(RUNME_EXE)
+$(RUNME_EXE): runme.c allocator.h liballocator.so
+	$(CC) -Wall -Wextra -Werror runme.c -L. -lallocator -o $(RUNME_EXE)
 
 
 # "runme" target — runs the runme executable
@@ -41,7 +36,7 @@ test: $(RUNME_EXE)
 
 # Clean target
 clean:
-	rm -f $(ALLOC_OBJ) $(LIB) $(RUNME_EXE)
+	rm -f allocator.o liballocator.so runme
 
 
 # Phony targets to avoid conflict with files

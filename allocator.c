@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <stddef.h>
 #include "./allocator.h"
 
 
@@ -54,6 +55,7 @@ typedef struct {
     uint32_t next;          // Offset of next block header
     uint32_t seq;           // Sequence number for detecting partial writes
     uint32_t crc;           // Cyclic redundancy checksum value
+    uint8_t _pad[12];       // Padding to make 40 bytes
 } BlockHeader;
 
 
@@ -69,6 +71,9 @@ typedef struct {
 static uint8_t *g_heap = NULL;       // Base pointer
 static size_t   g_heap_size = 0;     // Size of heap memory in bytes
 
+// 1 is debug information should be displayed, 0 if not.
+static int debug = 0;
+
 
 /**
  * @brief Get a pointer to the footer from a pointer of the header and the 
@@ -77,11 +82,9 @@ static size_t   g_heap_size = 0;     // Size of heap memory in bytes
  * @param h The header pointer.
  * @return * BlockFooter* A pointer to the footer.
  */
-BlockFooter* get_footer(BlockHeader *h) {
-    if (!h) {
-        return NULL;
-    }
-    return (BlockFooter*)((uint8_t*)(h + 1) + h->size);
+static inline BlockFooter* get_footer(BlockHeader *h) {
+    if (!h) return NULL;
+    return (BlockFooter*)(((uint8_t*)h) + sizeof(BlockHeader) + h->size);
 }
 
 
@@ -132,7 +135,8 @@ uint32_t crc32(const void *data, size_t len) {
  * @return uint32_t The CRC32 checksum.
  */
 uint32_t get_header_crc(const BlockHeader *h) {
-    return crc32(h, sizeof(BlockHeader) - sizeof(uint32_t));
+    /* CRC over all bytes up to but NOT including crc field */
+    return crc32(h, offsetof(BlockHeader, crc));
 }
 
 
@@ -144,7 +148,8 @@ uint32_t get_header_crc(const BlockHeader *h) {
  * @return uint32_t The CRC32 checksum.
  */
 uint32_t get_footer_crc(const BlockFooter *f) {
-    return crc32(f, sizeof(BlockFooter) - sizeof(uint32_t));
+    /* CRC over all bytes up to but NOT including crc field */
+    return crc32(f, offsetof(BlockFooter, crc));
 }
 
 
@@ -155,28 +160,37 @@ uint32_t get_footer_crc(const BlockFooter *f) {
  * @return * int A boolean indicating if the block is valid.
  */
 int is_block_valid(BlockHeader *h) {
+    // Input sanitisation
+    if (debug != 1 && debug != 0) {
+        debug = 0;
+    }
     if (!h) {
+        if (debug) printf("No header passed.\n");
         return 0;
     }
 
     // Check if header pointer is within the heap bounds.
     if ((uint8_t*)h < g_heap || (uint8_t*)h + sizeof(BlockHeader) >
     g_heap + g_heap_size) {
+        if (debug) printf("Header is out of heap bounds.\n");
         return 0;
     }
 
     // Check the header metadata constant.
     if (h->consistency != BLOCK_HEADER_CONSISTENCY) {
+        if (debug) printf("Header metadata constant is invalid.\n");
         return 0;
     }
 
     // Check the block size does not exceed the heap size.
     if (h->size > g_heap_size) {
+        if (debug) printf("Block size exceeds heap size.\n");
         return 0;
     }
 
     // Check the block header checksum is consistent.
     if (h->crc != get_header_crc(h)) {
+        if (debug) printf("Header checksum not valid.\n");
         return 0;
     }
 
@@ -185,31 +199,36 @@ int is_block_valid(BlockHeader *h) {
 
     // Check if the footer is beyond the heap bounds.
     if ((uint8_t*)f + sizeof(BlockFooter) > g_heap + g_heap_size) {
+        if (debug) printf("Footer is out of heap bounds.\n");
         return 0;
     }
 
     // Check the footer metadata constant.
     if (f->consistency != BLOCK_FOOTER_CONSISTENCY) {
-        // printf("[X]\n");
+        if (debug) printf("Footer metadata constant is invalid.\n");
         return 0;
     }
 
     // Check the footer size equals the header size.
     if (f->size != h->size) {
+        if (debug) printf("Footer size does not match header.\n");
         return 0;
     }
 
     // Check the footer sequence number equals the header sequence number.
     if (f->seq != h->seq) {
+        if (debug) printf("Footer sequence does not match header.\n");
         return 0;
     }
 
     // Check the block footer checksum is consistent.
     if (f->crc != get_footer_crc(f)) {
+        if (debug) printf("Footer checksum not valid.\n");
         return 0;
     }
 
     // If all the checks have passed, the block is valid.
+    if (debug) printf("All checks passed.\n");
     return 1;
 }
 
@@ -221,18 +240,25 @@ int is_block_valid(BlockHeader *h) {
  * @param h A pointer to the header of the corrupted block.
  */
 void quarantine_block(BlockHeader *h) {
-    // Check for missing input
-    if (!h) {
-        return;
-    }
-    // Update header metadata
-    h->state = QUARANTINED;
-    h->seq++;
-    h->crc = get_header_crc(h);
-    // Update footer metadata
+    if (!h) return;
+
     BlockFooter *f = get_footer(h);
-    f->seq = h->seq;
+
+    /* Update state first */
+    h->state = QUARANTINED;
+
+    /* 1. Increase sequence number */
+    h->seq++;
+
+    /* 2. Update footer mirror BEFORE computing CRCs */
+    f->seq  = h->seq;
+    f->size = h->size;
+
+    /* 3. Write footer CRC */
     f->crc = get_footer_crc(f);
+
+    /* 4. Write header CRC last → atomic update ordering */
+    h->crc = get_header_crc(h);
 }
 
 
@@ -245,18 +271,14 @@ void quarantine_block(BlockHeader *h) {
 
 static inline BlockHeader* place_header_at(uint8_t *start) {
     if (!start) return NULL;
-    /* Compute a payload address that is ALIGN-aligned and sits after 
-    start + sizeof(BlockHeader).
-    We compute aligned_payload = ALIGN_UP(start + sizeof(BlockHeader)),
-    then header pointer = aligned_payload - sizeof(BlockHeader).
-    This guarantees (header+1) == aligned_payload and is aligned.
-    */
-    uintptr_t aligned_payload = ALIGN_UP((uintptr_t)(start +
-        sizeof(BlockHeader)));
-    BlockHeader *h = (BlockHeader*)(aligned_payload - sizeof(BlockHeader));
-    /* Safety: ensure header is not before start */
-    if ((uint8_t*)h < start) return NULL;
-    return h;
+
+    /* Align the *header* itself to 40 bytes */
+    uintptr_t hdr = ALIGN_UP((uintptr_t)start);
+
+    if (hdr + sizeof(BlockHeader) > (uintptr_t)(g_heap + g_heap_size))
+        return NULL;
+
+    return (BlockHeader*)hdr;
 }
 
 
@@ -296,55 +318,43 @@ static inline void* off_to_ptr(uint32_t offset) {
  * @param h A pointer to the newly freed block.
  */
 void merge_free_blocks(BlockHeader *h) {
-    if (!h) {
-        return;
-    }
-    /* Try to merge forward while possible */
+    if (!h) return;
+
+    /* Try merging forward repeatedly */
     while (h->next) {
         BlockHeader *h2 = off_to_ptr(h->next);
-        if (!h2) break;
-        if (!is_block_valid(h2) || h2->state != FREE) break;
-
-        /* Ensure blocks are physically adjacent in memory: the header of h2
-        must be the same as the address we would expect (right after h's footer,
-        accounting for any padding used to align h2). */
-        BlockFooter *f_h = get_footer(h);
-        uint8_t *candidate = (uint8_t*)f_h + sizeof(BlockFooter);
-        BlockHeader *expected_h2 = place_header_at(candidate);
-
-        if (expected_h2 != h2) {
-            /* They are not contiguous as expected; don't merge to avoid
-            swallowing unrelated memory. Quarantine h2 (defensive) and stop
-            merging. */
-            quarantine_block(h2);
+        if (!h2 || !is_block_valid(h2) || h2->state != FREE)
             break;
-        }
 
-        /* Compute merged payload size using addresses to include any padding
-        between payload start and footer: merged_payload = (end_of_h2_footer) -
-        (h payload start) - sizeof(BlockFooter) */
-        uint8_t *payload_start = (uint8_t*)(h + 1);
-        BlockFooter *f_h2 = get_footer(h2);
-        uint8_t *end_of_h2_footer = (uint8_t*)f_h2 + sizeof(BlockFooter);
-        if (end_of_h2_footer <= payload_start + sizeof(BlockFooter)) {
-            /* Defensive check: sizes would underflow or be invalid — 
-            quarantine and stop. */
-            quarantine_block(h2);
-            break;
-        }
-        size_t merged_payload = (size_t)(end_of_h2_footer - payload_start -
+        /* Check physical adjacency */
+        BlockFooter *f = get_footer(h);
+        uint8_t *candidate = (uint8_t*)f + sizeof(BlockFooter);
+
+        /* aligned expected location of the next header */
+        BlockHeader *expected = (BlockHeader*)ALIGN_UP((uintptr_t)candidate);
+
+        if (expected != h2)
+            break; /* not adjacent → stop, do not risk corruption */
+
+        /***** Perform merge *****/
+
+        /* New size spans both payloads + second header + second footer */
+        BlockFooter *f2 = get_footer(h2);
+        uint8_t *end_of_h2 = (uint8_t*)f2 + sizeof(BlockFooter);
+        uint8_t *payload_start = ((uint8_t*)h + sizeof(BlockHeader));
+
+        size_t merged_payload = (size_t)(end_of_h2 - payload_start -
             sizeof(BlockFooter));
-
-        /* Update links: h will absorb h2 */
         h->size = merged_payload;
-        h->next = h2->next;
 
-        /* If there's a block after h2, update its prev pointer */
+        /* Fix links: skip h2 */
+        h->next = h2->next;
         if (h2->next) {
             BlockHeader *h3 = off_to_ptr(h2->next);
             if (is_block_valid(h3)) {
                 h3->prev = ptr_to_off(h);
                 h3->crc = get_header_crc(h3);
+
                 BlockFooter *f3 = get_footer(h3);
                 f3->seq = h3->seq;
                 f3->crc = get_footer_crc(f3);
@@ -353,29 +363,24 @@ void merge_free_blocks(BlockHeader *h) {
             }
         }
 
-        /* Update merged header/footer metadata */
+        /* Update merged block metadata */
         h->seq++;
         h->crc = get_header_crc(h);
 
-        BlockFooter *f_new = get_footer(h);
-        f_new->consistency = BLOCK_FOOTER_CONSISTENCY;
-        f_new->size = h->size;
-        f_new->seq = h->seq;
-        f_new->crc = get_footer_crc(f_new);
+        BlockFooter *new_f = get_footer(h);
+        new_f->consistency = BLOCK_FOOTER_CONSISTENCY;
+        new_f->size = h->size;
+        new_f->seq = h->seq;
+        new_f->crc = get_footer_crc(new_f);
 
-        /* Continue loop to try to merge further forward (coalesce chain) */
+        /* Continue merging forward */
     }
-    /**
-     * @note Recursive call: if the previous block is free and valid, the
-     * function would will be called recursively with the previous block. This
-     * will merge it with the recently merged block. This repeats until a block
-     * is found that cannot be merged.
-     */
+
+    /* Try merging backward once */
     if (h->prev) {
         BlockHeader *p = off_to_ptr(h->prev);
-        if (is_block_valid(p) && p->state == FREE) {
+        if (p && is_block_valid(p) && p->state == FREE)
             merge_free_blocks(p);
-        }
     }
 }
 
@@ -386,39 +391,33 @@ void merge_free_blocks(BlockHeader *h) {
  * @param ptr The pointer to identify the block for.
  * @return BlockHeader* A pointer to the header of the block if found, or NULL.
  */
-BlockHeader* ptr_to_block(void* ptr) {
-    // Check for missing input.
-    if (!ptr) {
+BlockHeader* ptr_to_block(void *ptr) {
+    if (!ptr) return NULL;
+
+    uint8_t *p = (uint8_t*)ptr;
+    if (p < g_heap || p >= g_heap + g_heap_size)
         return NULL;
-    }
-    uint8_t *p = ptr;
-    // Check for out of bounds pointer.
-    if (p < g_heap || p >= g_heap + g_heap_size) {
-        return NULL;
-    }
+
     GlobalHeader *G = (GlobalHeader*)g_heap;
     uint32_t off = G->first_block;
 
-    // Traverses the linked list.
     while (off) {
-        // Get the header of the current block from the offset.
         BlockHeader *h = off_to_ptr(off);
-        // If the block is invalid, quarantine and move on.
+        if (!h) return NULL;
+
         if (!is_block_valid(h)) {
             quarantine_block(h);
-            off = h->next;
-            continue;
+            return NULL;  /* DO NOT FOLLOW A CORRUPTED NEXT POINTER */
         }
-        // Initialise pointers for start and end of payload.
-        uint8_t *start = (uint8_t*)(h+1);
-        uint8_t *end = start + h->size;
-        // NEW: recompute actual payload start after header alignment
-        // Check if the pointer falls within the payload.
+
+        uint8_t *start = ((uint8_t*)h + sizeof(BlockHeader));
+        uint8_t *end   = start + h->size;
+
         if (p >= start && p < end && h->state == USED)
             return h;
+
         off = h->next;
     }
-    // If the pointer lies within the heap, but in a free or quarantined block.
     return NULL;
 }
 
@@ -429,120 +428,110 @@ BlockHeader* ptr_to_block(void* ptr) {
  * @param h A pointer to the block to split
  * @param needed The size of the block to be split
  */
-void split_block(BlockHeader* h, size_t needed) {
-    if (!h || !needed) {
-        return;
-    }
-
-    // Check the block can fit the needed size
-    // if (leftover < sizeof(BlockHeader)+sizeof(BlockFooter)+ALIGN){
-    //     return;
-    // }
+void split_block(BlockHeader *h, size_t needed) {
+    if (!h || needed == 0) return;
     if (h->size < needed) return;
-    size_t leftover = h->size - needed;
 
-    // Update the old block metadata
+    size_t old_payload = h->size;
+    size_t leftover = old_payload - needed;
+
+    const size_t MIN_REMAINDER =
+        sizeof(BlockHeader) + sizeof(BlockFooter) + ALIGN;
+
+    if (leftover < MIN_REMAINDER)
+        return;   /* Not enough space to form a second block */
+
+    /* ---- Shrink original block ---- */
     h->size = needed;
     h->seq++;
+
+    BlockFooter *f1 = get_footer(h);
+    f1->consistency = BLOCK_FOOTER_CONSISTENCY;
+    f1->size = h->size;
+    f1->seq = h->seq;
+    f1->crc = get_footer_crc(f1);
+
     h->crc = get_header_crc(h);
 
-    BlockFooter *f = get_footer(h);
-    f->size = h->size;
-    f->consistency = BLOCK_FOOTER_CONSISTENCY;
-    f->size = h->size;
-    f->seq = h->seq;
-    f->crc = get_footer_crc(f);
+    /* Original block's absolute end */
+    uint8_t *orig_footer = ((uint8_t*)h + sizeof(BlockHeader) + old_payload);
+    uint8_t *orig_footer_end = orig_footer + sizeof(BlockFooter);
 
-    /* Candidate start location for the new header is right after the footer */
-    uint8_t *candidate = (uint8_t*)f + sizeof(BlockFooter);
+    /* Start searching for new header right after shrunk footer */
+    uint8_t *candidate = (uint8_t*)f1 + sizeof(BlockFooter);
 
-    /* Place the new header so that (new_h+1) is ALIGN aligned */
-    BlockHeader *new_h = place_header_at(candidate);
-    if (!new_h) {
-        /* cannot place aligned header — revert size change (safety) */
-        /* revert: better to mark as no split rather than leave inconsistent */
-        /* We revert header to old size (previously needed+leftover) */
-        /* old size = needed + leftover */
-        h->size = needed + leftover;
+    /* Align new header start */
+    uintptr_t new_hdr_addr = ALIGN_UP((uintptr_t)candidate);
+
+    uint8_t *nhp = (uint8_t*)new_hdr_addr;
+
+    if (nhp + sizeof(BlockHeader) + sizeof(BlockFooter) > orig_footer_end) {
+        /* Can't place second block — revert */
+        h->size = old_payload;
         h->seq++;
+
+        BlockFooter *fr = get_footer(h);
+        fr->consistency = BLOCK_FOOTER_CONSISTENCY;
+        fr->size = h->size;
+        fr->seq = h->seq;
+        fr->crc = get_footer_crc(fr);
+
         h->crc = get_header_crc(h);
-        f = get_footer(h);
-        f->size = h->size;
-        f->seq = h->seq;
-        f->crc = get_footer_crc(f);
         return;
     }
 
-    /* padding between candidate and actual new header placement */
-    size_t padding = (size_t)((uint8_t*)new_h - candidate);
-
-    /* Compute the new payload size for new_h accounting for padding and the
-       space taken by the new header+footer. leftover originally included all
-       bytes after the shrunk 'needed' payload; we must subtract the padding and
-       the metadata sizes to get the new payload. */
-    if (leftover < padding + sizeof(BlockHeader) + sizeof(BlockFooter)) {
-        /* Not enough space to create a second block after alignment; cancel */
-        /* revert to original size */
-        h->size = needed + leftover;
-        h->seq++;
-        h->crc = get_header_crc(h);
-        f = get_footer(h);
-        f->size = h->size;
-        f->seq = h->seq;
-        f->crc = get_footer_crc(f);
-        return;
-    }
-
-    size_t new_payload = leftover - padding - sizeof(BlockHeader) -
-    sizeof(BlockFooter);
+    /* new payload size between new header and original footer */
+    size_t new_payload = (size_t)(orig_footer_end -
+                      (nhp + sizeof(BlockHeader) + sizeof(BlockFooter)));
     if (new_payload < ALIGN) {
-        /* Keep a minimum payload (ALIGN) for any split block to avoid tiny
-        fragments */
-        h->size = needed + leftover;
+        /* revert */
+        h->size = old_payload;
         h->seq++;
+
+        BlockFooter *fr = get_footer(h);
+        fr->consistency = BLOCK_FOOTER_CONSISTENCY;
+        fr->size = h->size;
+        fr->seq = h->seq;
+        fr->crc = get_footer_crc(fr);
+
         h->crc = get_header_crc(h);
-        f = get_footer(h);
-        f->size = h->size;
-        f->seq = h->seq;
-        f->crc = get_footer_crc(f);
         return;
     }
 
-    /* Initialize new block metadata */
-    new_h->consistency = BLOCK_HEADER_CONSISTENCY;
-    new_h->seq = 1;
-    new_h->state = FREE;
-    new_h->prev = ptr_to_off(h);
-    new_h->next = h->next;
-    new_h->size = new_payload;
-    new_h->crc = get_header_crc(new_h);
+    /* ---- Create the new block ---- */
+    BlockHeader *nh = (BlockHeader*)nhp;
 
-    /* New footer */
-    BlockFooter *new_f = get_footer(new_h);
-    new_f->consistency = BLOCK_FOOTER_CONSISTENCY;
-    new_f->size = new_h->size;
-    new_f->seq = new_h->seq;
-    new_f->crc = get_footer_crc(new_f);
+    nh->consistency = BLOCK_HEADER_CONSISTENCY;
+    nh->state = FREE;
+    nh->size = new_payload;
+    nh->prev = ptr_to_off(h);
+    nh->next = h->next;
+    nh->seq = 1;
+    nh->crc = get_header_crc(nh);
 
-    // If the old block had a next block
+    BlockFooter *f2 = get_footer(nh);
+    f2->consistency = BLOCK_FOOTER_CONSISTENCY;
+    f2->size = nh->size;
+    f2->seq = nh->seq;
+    f2->crc = get_footer_crc(f2);
+
+    /* Fix next block if exists */
     if (h->next) {
-        BlockHeader *next_h = off_to_ptr(h->next);
-        if (is_block_valid(next_h)) {
-            next_h->prev = ptr_to_off(new_h);
-            next_h->crc = get_header_crc(next_h);
-            BlockFooter *next_f = get_footer(next_h);
-            next_f->seq = next_h->seq;
-            next_f->crc = get_footer_crc(next_f);
+        BlockHeader *nx = off_to_ptr(h->next);
+        if (is_block_valid(nx)) {
+            nx->prev = ptr_to_off(nh);
+            nx->crc = get_header_crc(nx);
+            BlockFooter *nxf = get_footer(nx);
+            nxf->seq = nx->seq;
+            nxf->crc = get_footer_crc(nxf);
         } else {
-            quarantine_block(next_h);
+            quarantine_block(nx);
         }
     }
 
-    // Set the `next` block to the new block
-    h->next = ptr_to_off(new_h);
+    h->next = ptr_to_off(nh);
     h->crc = get_header_crc(h);
 }
-
 
 /******************************************************************************
  * 
@@ -560,77 +549,65 @@ void split_block(BlockHeader* h, size_t needed) {
  * @return int 0 on success, non-zero on failure.
  */
 int mm_init(uint8_t *heap, size_t heap_size) {
-    // Check the argument `heap_size` is large enough.
-    if (!heap || heap_size < 1024) {
+    printf("Size of header: %lu", sizeof(BlockHeader));
+    if (!heap || heap_size < 1024)
         return -1;
-    }
 
     g_heap = heap;
     g_heap_size = heap_size;
 
-
     GlobalHeader *G = (GlobalHeader*)g_heap;
 
-    // Detect if the heap already exists.
-    if (G->consistency == GLOBAL_HEADER_CONSISTENCY) {
+    /* If heap already initialized, return success */
+    if (G->consistency == GLOBAL_HEADER_CONSISTENCY)
         return 0;
-    }
 
-    // Initialise a new heap if it does not already exist.
     memset(heap, 0, heap_size);
 
-    // Set the global header metadata.
+    /* Initialize global header */
     G->consistency = GLOBAL_HEADER_CONSISTENCY;
     G->heap_size = heap_size;
-    //=========================================================================
-    // G->first_block = sizeof(GlobalHeader);
-    uint8_t *start_for_first = g_heap + sizeof(GlobalHeader);
-    BlockHeader *h = place_header_at(start_for_first);
-    if (!h) return -1;
-    G->first_block = ptr_to_off(h);
-    G->crc = crc32(G, sizeof(GlobalHeader) - sizeof(uint32_t));
-    //=========================================================================
 
-    // Create one giant free block after the global header.
-    //================================================
-    // BlockHeader *h = (BlockHeader*)(g_heap + G->first_block);
-    //================================================
+    /* Compute first header start */
+    uint8_t *block_start = g_heap + sizeof(GlobalHeader);
+    BlockHeader *h = place_header_at(block_start);
+    if (!h) return -1;
+
+    G->first_block = ptr_to_off(h);
+    /* CRC covers everything up to crc field */
+    G->crc = crc32(G, offsetof(GlobalHeader, crc));
+
+    /* Construct first block header */
     h->consistency = BLOCK_HEADER_CONSISTENCY;
-    h->seq = 1;
     h->state = FREE;
     h->prev = 0;
     h->next = 0;
+    h->seq = 1;
 
-    /* Compute payload size as bytes between payload start and footer space
-       before the end of the heap. This correctly accounts for header placement
-       alignment and any padding inserted. */
-    uint8_t *payload_start = (uint8_t*)(h + 1);
-    /* Footer must fit after payload, so we leave sizeof(BlockFooter) bytes */
-    if ((size_t)(g_heap + g_heap_size - payload_start) < sizeof(BlockFooter)) {
+    /* payload_start = header + 40 */
+    uint8_t *payload_start = ((uint8_t*)h + sizeof(BlockHeader));
+
+    if (payload_start + sizeof(BlockFooter) > g_heap + g_heap_size)
         return -1;
-    }
-    size_t payload_size = (size_t)(g_heap + g_heap_size - payload_start -
-        sizeof(BlockFooter));
 
-    // Calculate the payload size
-    // size_t payload_size = heap_size -sizeof(GlobalHeader)-sizeof(BlockHeader)
-    // - sizeof(BlockFooter);
-    h->size = payload_size;
+    /* payload size is everything until final footer */
+    h->size = (size_t)((g_heap + g_heap_size) - payload_start -
+    sizeof(BlockFooter));
+
+    /* header CRC last */
     h->crc = get_header_crc(h);
 
-    // Build the block footer.
+    /* footer immediately after payload */
     BlockFooter *f = get_footer(h);
     f->consistency = BLOCK_FOOTER_CONSISTENCY;
     f->size = h->size;
     f->seq = h->seq;
     f->crc = get_footer_crc(f);
 
-    // Get a pointer to the start of the payload.
-    uint8_t *payload = (uint8_t*)(h + 1);
-    // Fill the unused space with the repeating pattern.
-    for (size_t i=0; i < h->size; i++) {
-        payload[i] = UNUSED_PATTERN[i % 5];
-    }
+    /* fill payload */
+    for (size_t i = 0; i < h->size; i++)
+        payload_start[i] = UNUSED_PATTERN[i % 5];
+
     return 0;
 }
 
@@ -642,45 +619,40 @@ int mm_init(uint8_t *heap, size_t heap_size) {
  * @return void* The aligned payload pointer, or NULL on failure.
  */
 void *mm_malloc(size_t size) {
-// If there is no heap or the size is zero, fail safely.
-    if (!g_heap || size == 0) {
-        return NULL;
-    }
-    // Align the size to the 40-byte alignment.
+    if (!g_heap || size == 0) return NULL;
+
     size = ALIGN_UP(size);
-    // Get the offset of the first block.
+
     GlobalHeader *G = (GlobalHeader*)g_heap;
     uint32_t off = G->first_block;
 
     while (off) {
         BlockHeader *h = off_to_ptr(off);
-        if (!h) {
-            return NULL;
-        }
-        // If the block is invalid, quarantine and move on.
+        if (!h) return NULL;
+
         if (!is_block_valid(h)) {
             quarantine_block(h);
-            off = h->next;
-            continue;
+            return NULL;  /* stop */
         }
-        // If the block is free and not smaller than `size`, allocate.
+
         if (h->state == FREE && h->size >= size) {
-            // Split the current block to a partition of the correct size.
             split_block(h, size);
-            // Update the block metadata.
+
             h->state = USED;
             h->seq++;
+
             BlockFooter *f = get_footer(h);
             f->seq = h->seq;
             f->size = h->size;
             f->crc = get_footer_crc(f);
+
             h->crc = get_header_crc(h);
-            // Return the pointer to the block.
-            return (void*)(h+1);
+
+            return ((uint8_t*)h + sizeof(BlockHeader));
         }
+
         off = h->next;
     }
-    // No blocks are free, fail safely.
     return NULL;
 }
 
@@ -697,13 +669,14 @@ void *mm_malloc(size_t size) {
  */
 int mm_read(void *ptr, size_t offset, void *buf, size_t len) {
     BlockHeader *h = ptr_to_block(ptr);
-    // If `h` is a NULL pointer or if the data to be read exceeds the payload.
-    if (!h || offset+len > h->size) {
+
+    if (!h)
         return -1;
-    }
-    //? No need to validate the block as this is implied by reaching here.
-    // Copy the data from the block payload.
-    memcpy(buf, (uint8_t*)(h+1)+offset, len);
+
+    if (offset + len > h->size)
+        return -1;
+
+    memcpy(buf, (((uint8_t*)h + sizeof(BlockHeader))) + offset, len);
     return (int)len;
 }
 
@@ -720,18 +693,23 @@ int mm_read(void *ptr, size_t offset, void *buf, size_t len) {
  */
 int mm_write(void *ptr, size_t offset, const void *src, size_t len) {
     BlockHeader *h = ptr_to_block(ptr);
-    // If `h` is a NULL pointer or if the data to be read exceeds the payload.
-    if (!h || offset+len > h->size) {
+
+    if (!h)
         return -1;
-    }
-    //? No need to validate the block as this is implied by reaching here.
-    memcpy((uint8_t*)(h+1)+offset, src, len);
-    // Update the block metadata.
+
+    if (offset + len > h->size)
+        return -1;
+
+    memcpy(((uint8_t*)h + sizeof(BlockHeader)) + offset, src, len);
+
+    /* Update block metadata */
     h->seq++;
     h->crc = get_header_crc(h);
+
     BlockFooter *f = get_footer(h);
     f->seq = h->seq;
     f->crc = get_footer_crc(f);
+
     return (int)len;
 }
 
@@ -743,55 +721,30 @@ int mm_write(void *ptr, size_t offset, const void *src, size_t len) {
  * @param ptr A pointer to the block to be freed.
  */
 void mm_free(void *ptr) {
-    // Check for missing input.
-    if (!ptr) {
-        return;
-    }
-    BlockHeader *h = ptr_to_block(ptr);
-    if (!h) {
-        return;
-    }
-    // Check if the block is free or quarantined. Prevents double-free.
-    if (h->state != USED) {
-        /* Remove from linked list if possible to prevent later traversal */
-        if (h->prev) {
-            BlockHeader *p = off_to_ptr(h->prev);
-            if (is_block_valid(p)) {
-                p->next = h->next;
-                p->crc = get_header_crc(p);
-                BlockFooter *pf = get_footer(p);
-                pf->seq = p->seq;
-                pf->crc = get_footer_crc(pf);
-            }
-        }
-        if (h->next) {
-            BlockHeader *n = off_to_ptr(h->next);
-            if (is_block_valid(n)) {
-                n->prev = h->prev;
-                n->crc = get_header_crc(n);
-                BlockFooter *nf = get_footer(n);
-                nf->seq = n->seq;
-                nf->crc = get_footer_crc(nf);
-            }
-        }
-        h->prev = h->next = 0;
+    if (!ptr) return;
 
+    BlockHeader *h = ptr_to_block(ptr);
+    if (!h) return;
+
+    if (h->state != USED) {
         quarantine_block(h);
         return;
     }
-    // Update block metadata.
+
     h->state = FREE;
     h->seq++;
+
     BlockFooter *f = get_footer(h);
     f->seq = h->seq;
     f->size = h->size;
     f->crc = get_footer_crc(f);
+
     h->crc = get_header_crc(h);
-    // Refill payload with repeating pattern.
-    uint8_t *payload = (uint8_t*)(h+1);
-    for (size_t i = 0; i < h->size; i++) {
-        payload[i] = UNUSED_PATTERN[i%5];
-    }
+
+    uint8_t *payload = ((uint8_t*)h + sizeof(BlockHeader));
+    for (size_t i = 0; i < h->size; i++)
+        payload[i] = UNUSED_PATTERN[i % 5];
+
     merge_free_blocks(h);
 }
 
@@ -805,29 +758,30 @@ void mm_free(void *ptr) {
  * @return void* The pointer to the resized block, or NULL on failure.
  */
 void *mm_realloc(void *ptr, size_t new_size) {
-    // If there is no pointer, allocate a block of size `new_size`.
-    if (!ptr) {
+    if (!ptr)
         return mm_malloc(new_size);
-    }
-    BlockHeader *h = ptr_to_block(ptr);
-    if (!h) {
-        return NULL;
-    }
-    // Align the size to the 40-byte alignment.
-    new_size = ALIGN_UP(new_size);
-    // If the new size is smaller than the existing block, return the pointer.
-    if (new_size <= h->size) {
-        return ptr;
-    }
 
-    // Allocate a new larger block.
-    void *p2 = mm_malloc(new_size);
-    if (!p2) {
+    BlockHeader *h = ptr_to_block(ptr);
+    if (!h)
         return NULL;
-    }
-    // Copy the old data and free the old block.
-    mm_write(p2, 0, (uint8_t*)(h+1), h->size);
+
+    new_size = ALIGN_UP(new_size);
+
+    /* If shrinking or same size → keep in place */
+    if (new_size <= h->size)
+        return ptr;
+
+    /* Allocate new block */
+    void *p2 = mm_malloc(new_size);
+    if (!p2)
+        return NULL;
+
+    /* Copy old payload */
+    mm_write(p2, 0, ((uint8_t*)h + sizeof(BlockHeader)), h->size);
+
+    /* Free old block */
     mm_free(ptr);
+
     return p2;
 }
 
@@ -837,19 +791,40 @@ void *mm_realloc(void *ptr, size_t new_size) {
  * 
  */
 void mm_heap_stats(void) {
-    // Get a pointer to the global header
+    if (!g_heap) {
+        printf("Heap not initialized.\n");
+        return;
+    }
+
     GlobalHeader *G = (GlobalHeader*)g_heap;
-    // The offset to the first block to begin the traversal
     uint32_t off = G->first_block;
 
-    // Traverse the heap and print the status of each block.
+    printf("=== Heap Stats ===\n");
+    printf("Heap size: %u\n", G->heap_size);
+    printf("First block offset: %u\n\n", G->first_block);
+
     while (off) {
         BlockHeader *h = off_to_ptr(off);
-        printf("Block stats:\n"
-            "    Offset = %u\n"
-            "    Size = %u\n"
-            "    State = %u\n"
-            "    Valid = %d\n", off, h->size, h->state, is_block_valid(h));
+        if (!h) {
+            printf("Invalid block offset %u\n", off);
+            break;
+        }
+
+        printf("Block @ offset %u:\n", off);
+        printf("    size   = %u\n", h->size);
+        printf("    state  = %u (%s)\n",
+            h->state,
+            (h->state == FREE ? "FREE" :
+             (h->state == USED ? "USED" :
+              (h->state == QUARANTINED ? "QUARANTINED" : "???"))));
+        printf("    prev   = %u\n", h->prev);
+        printf("    next   = %u\n", h->next);
+        printf("    seq    = %u\n", h->seq);
+        printf("    valid  = %d\n", is_block_valid(h));
+        printf("\n");
+
         off = h->next;
     }
+
+    printf("=== End Heap Stats ===\n");
 }
