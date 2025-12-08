@@ -163,6 +163,12 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    /**************************************************************************
+     *
+     * Storm Tests
+     *
+     *************************************************************************/
+
     printf("\n\nSimulating storm...\n");
 
     void *p_5 = mm_malloc(128);
@@ -188,9 +194,12 @@ int main(int argc, char **argv) {
     mm_heap_stats();
 
     size_t flip_index = seed % heap_size;
+    printf("Flip Index: %lu\n", flip_index);
     heap[flip_index] ^= 0xFF;  // simple bit flip
     printf("Simulated bit flip at heap[%zu]\n", flip_index);
 
+
+    printf("============================Step 9============================\n");
     printf("Reading data written to block 1 with mm_read...\n");
     uint8_t buf2[128];
     if (mm_read(p, 0, buf2, 128) != 128) {
@@ -206,6 +215,22 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
+
+    // Attempts to write to quarantined block.
+    printf("============================Step 10===========================\n");
+    printf("Writing data to block 3 with mm_write...\n");
+    uint8_t data_2[128];
+    for (int i = 0; i < 128; i++) {
+        data_2[i] = (uint8_t)(i + seed);
+    }
+
+    if (mm_write(p_5, 0, data_2, 128) != 128) {
+        fprintf(stderr, "mm_write detected corruption\n");
+        mm_heap_stats();
+        return 1;
+    }
+    printf("mm_write passed.\n");
+    mm_heap_stats();
 
 
 

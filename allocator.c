@@ -1,4 +1,11 @@
-// New allocator with padding-based alignment
+// Copyright 2025 Rory Poulter
+
+/******************************************************************************
+ *
+ * Includes and Definitions
+ *
+ *****************************************************************************/
+
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -9,7 +16,7 @@
 #define ALIGN_UP(x) (((x)+(ALIGN-1))/ALIGN*ALIGN)
 
 // Patterns for unused space
-static uint8_t UNUSED_PATTERN[5] = {0xC0,0xDE,0xF0,0x0D,0x55};
+static uint8_t UNUSED_PATTERN[5] = {0xC0, 0xDE, 0xF0, 0x0D, 0x55};
 
 // Metadata constants
 #define GLOBAL_HEADER_CONSISTENCY 0xDEADCE11
@@ -20,6 +27,14 @@ static uint8_t UNUSED_PATTERN[5] = {0xC0,0xDE,0xF0,0x0D,0x55};
 #define FREE 0
 #define USED 1
 #define QUARANTINED 2
+
+
+/******************************************************************************
+ *
+ * Data Structures
+ *
+ *****************************************************************************/
+
 
 // ----- GLOBAL HEADER -----
 typedef struct {
@@ -57,9 +72,24 @@ static uint8_t *g_heap = NULL;
 static size_t g_heap_size = 0;
 
 // 1 is debug information should be displayed, 0 if not.
-static int debug = 1;
+static int debug = 0;
 
-// -------- CRC -----------
+
+/******************************************************************************
+ *
+ * Checksum Functions
+ *
+ *****************************************************************************/
+
+
+/**
+ * @brief Calculates the CRC32 value.
+ * 
+ * @param data The pointer to the data to calculate the CRC32 checksum
+ * value for.
+ * @param len The length of the data.
+ * @return uint32_t The CRC32 checksum value.
+ */
 uint32_t crc32(const void *data, size_t len) {
     const uint8_t *p = data;
     uint32_t crc = 0xFFFFFFFFu;
@@ -71,35 +101,93 @@ uint32_t crc32(const void *data, size_t len) {
     return crc ^ 0xFFFFFFFFu;
 }
 
+
+/**
+ * @brief Calculate the CRC32 checksum using the metadata in a block header
+ * excluding the CRC32 value.
+ * 
+ * @param h A pointer to the block header.
+ * @return uint32_t The CRC32 checksum.
+ */
 uint32_t get_header_crc(const BlockHeader *h) {
     return crc32(h, offsetof(BlockHeader, crc));
 }
+
+
+/**
+ * @brief Calculate the CRC32 checksum using the metadata in a block footer
+ * excluding the CRC32 value.
+ * 
+ * @param h A pointer to the block footer.
+ * @return uint32_t The CRC32 checksum.
+ */
 uint32_t get_footer_crc(const BlockFooter *f) {
     return crc32(f, offsetof(BlockFooter, crc));
 }
 
-// ---------- Helpers ----------
+
+/******************************************************************************
+ *
+ * Helper Functions
+ *
+ *****************************************************************************/
+
+
+/**
+ * @brief Generates an offset corresponding to a pointer.
+ * 
+ * @param p The pointer.
+ * @return uint32_t The offset corresponding to the pointer.
+ */
 static inline uint32_t ptr_to_off(void *p) {
     if (!p) return 0;
     return (uint32_t)((uint8_t*)p - g_heap);
 }
 
+
+/**
+ * @brief Generates a pointer to data located `offset` bytes away.
+ * 
+ * @param offset The offset of the pointer to be generated.
+ * @return void* The pointer corresponding to the offset.
+ */
 static inline void *off_to_ptr(uint32_t off) {
     if (off == 0 || off >= g_heap_size) return NULL;
     return g_heap + off;
 }
 
+
+/**
+ * @brief Get a pointer to the footer from a pointer of the header and the 
+ * block size.
+ * 
+ * @param h The header pointer.
+ * @return * BlockFooter* A pointer to the footer.
+ */
 static inline BlockFooter *get_footer(BlockHeader *h) {
     return (BlockFooter*)((uint8_t*)h + sizeof(BlockHeader) + h->size);
 }
 
+
+/**
+ * @brief Computes a pointer to the next block.
+ * 
+ * @param h A pointer to the current block.
+ * @return uint8_t* A pointer to the next block.
+ */
 static inline uint8_t *block_next_header(BlockHeader *h) {
     BlockFooter *f = get_footer(h);
     uintptr_t addr = (uintptr_t)f + sizeof(BlockFooter) + f->pad_size;
     return (uint8_t*)addr;
 }
 
-// -------- Integrity check --------
+
+/**
+ * @brief Checks the block metadata for validity.
+ * 
+ * @param h The pointer to the block header.
+ * @return * int A boolean indicating if the block is valid.
+ */
 int is_block_valid(BlockHeader *h) {
     // Input sanitisation
     if (debug != 1 && debug != 0) {
@@ -174,7 +262,12 @@ int is_block_valid(BlockHeader *h) {
 }
 
 
-// -------- Quarantine --------
+/**
+ * @brief Updates the metadata of a block when it has been corrupted so the
+ * memory allocator will quarantine it.
+ * 
+ * @param h A pointer to the header of the corrupted block.
+ */
 void quarantine_block(BlockHeader *h) {
     if (!h) return;
     BlockFooter *f = get_footer(h);
@@ -190,7 +283,13 @@ void quarantine_block(BlockHeader *h) {
     h->crc = get_header_crc(h);
 }
 
-// -------- Compute padding --------
+
+/**
+ * @brief Computes the padding after the footer to align the next block.
+ * 
+ * @param h A pointer to the header of the current block.
+ * @return uint8_t The padding required to align the next payload.
+ */
 static inline uint8_t compute_padding(BlockHeader *h) {
     uintptr_t footer_end =
         (uintptr_t)h +
@@ -203,7 +302,13 @@ static inline uint8_t compute_padding(BlockHeader *h) {
     return pad;
 }
 
-// ---------- Split block ----------
+
+/**
+ * @brief Splits a block into two parts and sets the new partition to `FREE`
+ * 
+ * @param h A pointer to the block to split
+ * @param needed The size of the block to be split
+ */
 void split_block(BlockHeader *h, size_t needed) {
     if (!h) return;
     if (h->size < needed) return;
@@ -242,7 +347,8 @@ void split_block(BlockHeader *h, size_t needed) {
 
     nh->consistency = BLOCK_HEADER_CONSISTENCY;
     nh->state = FREE;
-    nh->size = (size_t)(block_end - (new_hdr_addr + sizeof(BlockHeader) + sizeof(BlockFooter)));
+    nh->size = (size_t)(block_end - (new_hdr_addr + sizeof(BlockHeader) +
+    sizeof(BlockFooter)));
     nh->prev = ptr_to_off(h);
     nh->next = h->next;
     nh->seq = 1;
@@ -277,7 +383,12 @@ void split_block(BlockHeader *h, size_t needed) {
     h->crc = get_header_crc(h);
 }
 
-// -------- Merge blocks --------
+
+/**
+ * @brief Merges adjacent free valid blocks into one contiguous block.
+ * 
+ * @param h A pointer to the newly freed block.
+ */
 void merge_free_blocks(BlockHeader *h) {
     if (!h) return;
 
@@ -332,7 +443,12 @@ void merge_free_blocks(BlockHeader *h) {
 }
 
 
-// -------- Find block by payload ptr --------
+/**
+ * @brief Finds the block which a pointer falls within the bounds of.
+ * 
+ * @param ptr The pointer to identify the block for.
+ * @return BlockHeader* A pointer to the header of the block if found, or NULL.
+ */
 BlockHeader *ptr_to_block(void *ptr) {
     if (!ptr) return NULL;
 
@@ -364,7 +480,22 @@ BlockHeader *ptr_to_block(void *ptr) {
     return NULL;
 }
 
-// -------- mm_init --------
+
+/******************************************************************************
+ *
+ * Memory Allocator Functions
+ *
+ *****************************************************************************/
+
+
+/**
+ * @brief Initialize the allocator over a provided memory block. Creates the global header and the
+ * first memory block. Fills the payload with the repeating pattern `0xC0DEF00D55`.
+ * 
+ * @param heap The base pointer to the heap memory.
+ * @param heap_size The number of bytes available in heap.
+ * @return int 0 on success, non-zero on failure.
+ */
 int mm_init(uint8_t *heap, size_t heap_size) {
     if (!heap || heap_size < 256) return -1;
 
@@ -435,7 +566,12 @@ int mm_init(uint8_t *heap, size_t heap_size) {
 }
 
 
-// -------- mm_malloc --------
+/**
+ * @brief Allocate a block with ALIGN-byte aligned payload.
+ * 
+ * @param size The size of the block to be allocated (in bytes).
+ * @return void* The aligned payload pointer, or NULL on failure.
+ */
 void *mm_malloc(size_t size) {
     if (!g_heap || size == 0) return NULL;
 
@@ -475,7 +611,17 @@ void *mm_malloc(size_t size) {
     return NULL;
 }
 
-// -------- mm_read --------
+
+/**
+ * @brief Safely read data from an allocated block at offset bytes into buf.
+ * 
+ * @param ptr The pointer to the allocated block.
+ * @param offset The offset within the block to read from.
+ * @param buf The pointer to the buffer to store read data.
+ * @param len The number of bytes to read from the block.
+ * @return int The number of bytes read, or -1 if corruption or invalid pointer
+ * detected.
+ */
 int mm_read(void *ptr, size_t offset, void *buf, size_t len) {
     BlockHeader *h = ptr_to_block(ptr);
     if (!h) return -1;
@@ -486,7 +632,17 @@ int mm_read(void *ptr, size_t offset, void *buf, size_t len) {
     return (int)len;
 }
 
-// -------- mm_write --------
+
+/**
+ * @brief Safely write data into an allocated block at offset bytes from src.
+ * 
+ * @param ptr The pointer to the allocated block.
+ * @param offset The offset within the block to start writing.
+ * @param src The pointer to the source data to write.
+ * @param len The number of bytes to write.
+ * @return int The number of bytes written, or -1 if corruption or invalid
+ * pointer detected.
+ */
 int mm_write(void *ptr, size_t offset, const void *src, size_t len) {
     BlockHeader *h = ptr_to_block(ptr);
     if (!h) return -1;
@@ -506,7 +662,13 @@ int mm_write(void *ptr, size_t offset, const void *src, size_t len) {
     return (int)len;
 }
 
-// -------- mm_free --------
+
+/**
+ * @brief Free a previously-allocated block (ignore NULL). Must detect
+ * double-free.
+ * 
+ * @param ptr A pointer to the block to be freed.
+ */
 void mm_free(void *ptr) {
     if (!ptr) return;
 
@@ -536,6 +698,14 @@ void mm_free(void *ptr) {
 }
 
 
+/**
+ * @brief Resize a previously allocated block to new_size bytes, preserving
+ * data.
+ * 
+ * @param ptr The pointer to the block to be resized.
+ * @param new_size The new size of the block (in bytes).
+ * @return void* The pointer to the resized block, or NULL on failure.
+ */
 void *mm_realloc(void *ptr, size_t new_size) {
     /* Case 1: Behave like malloc when ptr == NULL */
     if (!ptr)
@@ -571,8 +741,17 @@ void *mm_realloc(void *ptr, size_t new_size) {
 }
 
 
+/******************************************************************************
+ *
+ * Debug Function
+ *
+ *****************************************************************************/
 
-// -------- stats (unchanged) --------
+
+/**
+ * @brief Output current heap usage and integrity statistics for debugging.
+ * 
+ */
 void mm_heap_stats(void) {
     if (!g_heap) {
         printf("Heap not initialized.\n");
