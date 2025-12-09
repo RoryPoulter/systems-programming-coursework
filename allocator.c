@@ -71,8 +71,8 @@ typedef struct {
 static uint8_t *g_heap = NULL;
 static size_t g_heap_size = 0;
 
-// 1 is debug information should be displayed, 0 if not.
-static int debug = 0;
+// 1 if debug information should be displayed, 0 if not.
+static int debug = 1;
 
 
 /******************************************************************************
@@ -202,6 +202,13 @@ int is_block_valid(BlockHeader *h) {
     if ((uint8_t*)h < g_heap || (uint8_t*)h + sizeof(BlockHeader) >
     g_heap + g_heap_size) {
         if (debug) printf("Header is out of heap bounds.\n");
+        return 0;
+    }
+
+    // Check if header is aligned => payload is aligned
+    if ((uintptr_t)h % 40) {
+        if (debug) printf("Header is not aligned: %p MOD 40 = %ld",
+        h, (uintptr_t)h % 40);
         return 0;
     }
 
