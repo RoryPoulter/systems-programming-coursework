@@ -60,6 +60,8 @@ int main(int argc, char **argv) {
     }
     printf("    mm_malloc passed.\n");
     mm_heap_stats();
+    printf("All pointers:\n");
+    printf("    p   = %p\n", p);
 
     /**
      * Check repeating pattern is valid. Expected output:
@@ -130,6 +132,10 @@ int main(int argc, char **argv) {
     }
     printf("    mm_malloc passed.\n");
     mm_heap_stats();
+    printf("All pointers:\n");
+    printf("    p   = %p\n", p);
+    printf("    p_2 = %p\n", p_2);
+    printf("    p_3 = %p\n", p_3);
 
     // Reallocating the third block.
     printf("============================Step 7============================\n");
@@ -141,6 +147,11 @@ int main(int argc, char **argv) {
     }
     printf("    mm_realloc passed.\n");
     mm_heap_stats();
+    printf("All pointers:\n");
+    printf("    p   = %p\n", p);
+    printf("    p_2 = %p\n", p_2);
+    printf("    p_3 = %p\n", p_3);
+    printf("    p_4 = %p\n", p_4);
 
     // Free memory
     printf("============================Step 8============================\n");
@@ -188,6 +199,12 @@ int main(int argc, char **argv) {
     printf("mm_write passed.\n");
 
     mm_heap_stats();
+    printf("All pointers:\n");
+    printf("    p   = %p (FREED)\n", p);
+    printf("    p_2 = %p (FREED)\n", p_2);
+    printf("    p_3 = %p\n", p_3);
+    printf("    p_4 = %p (FREED)\n", p_4);
+    printf("    p_5 = %p\n", p_5);
 
     size_t flip_index = seed % heap_size;
     printf("Flip Index: %lu\n", flip_index);
@@ -227,6 +244,13 @@ int main(int argc, char **argv) {
     }
     printf("mm_write passed.\n");
     mm_heap_stats();
+
+    printf("All pointers:\n");
+    printf("    p   = %p (FREED)\n", p);
+    printf("    p_2 = %p (FREED)\n", p_2);
+    printf("    p_3 = %p\n", p_3);
+    printf("    p_4 = %p (FREED)\n", p_4);
+    printf("    p_5 = %p\n", p_5);
 
 
 
