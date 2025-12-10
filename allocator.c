@@ -175,26 +175,26 @@ static inline BlockFooter *get_footer(BlockHeader *h) {
  * @param h A pointer to the current block.
  * @return uint8_t* A pointer to the next block.
  */
-static BlockHeader *block_next_header(BlockHeader *h) {
-    if (!h)
-        return NULL;
+// static BlockHeader *block_next_header(BlockHeader *h) {
+//     if (!h)
+//         return NULL;
 
-    uint8_t *payload = (uint8_t *)h + sizeof(BlockHeader);
-    BlockFooter *f = (BlockFooter *)(payload + h->size);
+//     uint8_t *payload = (uint8_t *)h + sizeof(BlockHeader);
+//     BlockFooter *f = (BlockFooter *)(payload + h->size);
 
-    /* Absolute pointer to next header */
-    uint8_t *next = (uint8_t *)f + sizeof(BlockFooter) + f->pad_size;
+//     /* Absolute pointer to next header */
+//     uint8_t *next = (uint8_t *)f + sizeof(BlockFooter) + f->pad_size;
 
-    /* Outside the heap? No next block */
-    if (next >= g_heap + g_heap_size)
-        return NULL;
+//     /* Outside the heap? No next block */
+//     if (next >= g_heap + g_heap_size)
+//         return NULL;
 
-    /* Alignment check (critical for deterministic layout) */
-    if (((uintptr_t)next) % ALIGN != 0)
-        return NULL;
+//     /* Alignment check (critical for deterministic layout) */
+//     if (((uintptr_t)next) % ALIGN != 0)
+//         return NULL;
 
-    return (BlockHeader *)next;
-}
+//     return (BlockHeader *)next;
+// }
 
 
 
@@ -432,7 +432,7 @@ static void merge_free_blocks(BlockHeader *h) {
             if (debug) printf("No next block.\n");
             return;
         }
-        BlockHeader *h2 = block_next_header(h);
+        BlockHeader *h2 = off_to_ptr(h->next);
 
         if (!h2) {
             if (debug) printf("No block after %p.\n", h);
@@ -493,6 +493,7 @@ static void merge_free_blocks(BlockHeader *h) {
          * Fix free list links
          * -------------------------------------------------------- */
         h->next = h2->next;
+        h->crc = get_header_crc(h);
 
         if (h2->next) {
             BlockHeader *hn = (BlockHeader *)(g_heap + h2->next);
@@ -756,6 +757,12 @@ int mm_read(void *ptr, size_t offset, void *buf, size_t len) {
     BlockHeader *h = ptr_to_block(ptr);
     if (!h) return -1;
 
+    if (!is_block_valid(h)) {
+        if (debug) printf("Quarantining block at %p", h);
+        quarantine_block(h);
+        return -1;
+    }
+
     if (offset + len > h->size) return -1;
 
     memcpy(buf, ((uint8_t*)h + sizeof(BlockHeader)) + offset, len);
@@ -776,6 +783,12 @@ int mm_read(void *ptr, size_t offset, void *buf, size_t len) {
 int mm_write(void *ptr, size_t offset, const void *src, size_t len) {
     BlockHeader *h = ptr_to_block(ptr);
     if (!h) return -1;
+
+    if (!is_block_valid(h)) {
+        if (debug) printf("Quarantining block at %p", h);
+        quarantine_block(h);
+        return -1;
+    }
 
     if (offset + len > h->size) return -1;
 
@@ -820,6 +833,12 @@ void mm_free(void *ptr) {
         return;
     }
 
+    if (!is_block_valid(h)) {
+        if (debug) printf("Quarantining block at %p", h);
+        quarantine_block(h);
+        return;
+    }
+
     h->state = FREE;
     h->seq++;
 
@@ -856,6 +875,12 @@ void *mm_realloc(void *ptr, size_t new_size) {
     BlockHeader *h = ptr_to_block(ptr);
     if (!h)
         return NULL; /* ptr invalid or quarantined */
+
+    if (!is_block_valid(h)) {
+        if (debug) printf("Quarantining block at %p", h);
+        quarantine_block(h);
+        return NULL;
+    }
 
     /* Alignment requirement */
     new_size = ALIGN_UP(new_size);
