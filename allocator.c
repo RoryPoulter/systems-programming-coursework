@@ -429,13 +429,13 @@ static void split_block(BlockHeader *h, size_t needed) {
 static void merge_free_blocks(BlockHeader *h) {
     while (1) {
         if (!h->next) {
-            if (debug) printf("No next block.\n");
+            if (debug) printf("No next block from %p.\n", h);
             return;
         }
         BlockHeader *h2 = off_to_ptr(h->next);
 
         if (!h2) {
-            if (debug) printf("No block after %p.\n", h);
+            if (debug) printf("h->next does not point to a block.\n");
             return;
         }
 
@@ -499,6 +499,14 @@ static void merge_free_blocks(BlockHeader *h) {
             BlockHeader *hn = (BlockHeader *)(g_heap + h2->next);
             hn->prev = (uint8_t *)h - g_heap;
             hn->crc = get_header_crc(hn);
+        }
+        if (h->prev) {
+            BlockHeader *ph = off_to_ptr(h->prev);
+            if (is_block_valid(ph) && ph->state == FREE) {
+                merge_free_blocks(ph);
+            }
+        } else {
+            printf("No previous block.\n");
         }
     }
 }
@@ -706,7 +714,7 @@ int mm_init(uint8_t *heap, size_t heap_size) {
 void *mm_malloc(size_t size) {
     if (!g_heap || size == 0) return NULL;
 
-    size = ALIGN_UP(size);
+    // size = ALIGN_UP(size);
     GlobalHeader *G = (GlobalHeader*)g_heap;
     uint32_t off = G->first_block;
 
@@ -881,9 +889,6 @@ void *mm_realloc(void *ptr, size_t new_size) {
         quarantine_block(h);
         return NULL;
     }
-
-    /* Alignment requirement */
-    new_size = ALIGN_UP(new_size);
 
     /* Case 2: Shrinking or same size → keep block */
     if (new_size <= h->size)
