@@ -32,35 +32,34 @@ int main(int argc, char **argv) {
     static uint8_t heap[HEAP_MAX];
 
     printf("============================Step 1============================\n");
-    printf("Initialising the heap with mm_init ...\n");
+    printf("    mm_init(%hhn, %zu)...\n", heap, heap_size);
     if (mm_init(heap, heap_size) != 0) {
-        fprintf(stderr, "mm_init failed.\n");
+        fprintf(stderr, "    mm_init failed.\n");
         return 1;
     }
-    printf("mm_init passed.\n");
+    printf("    mm_init passed.\n");
 
-    for (int i = 0; i < 64; i++) {
-        printf("%x ", heap[i]);
-    }
-    printf("\n");
+    // for (int i = 0; i < 64; i++) {
+    //     printf("%x ", heap[i]);
+    // }
+    // printf("\n");
 
-    printf("Heap initialized: size=%zu, seed=%u, storm=%u\n", heap_size, seed,
-        storm);
+    printf("    Heap initialized: size=%zu, seed=%u, storm=%u\n",
+        heap_size, seed, storm);
     mm_heap_stats();
 
     // Simple allocation test
     printf("============================Step 2============================\n");
-    printf("Allocating 128-byte block with mm_malloc...\n");
+    printf("    void *p = mm_malloc(128)...\n");
     void *p = mm_malloc(128);
     if (!p) {
-        fprintf(stderr, "mm_malloc failed.\n");
+        fprintf(stderr, "    mm_malloc failed.\n");
 
         mm_heap_stats();
         return 1;
     }
-    printf("mm_malloc passed.\n");
-    printf("Check pointer p = %p is 40-byte aligned:\n"
-        "p mod 40 = %ld\n", p, (uintptr_t)p % 40);
+    printf("    mm_malloc passed.\n");
+    printf("    p mod 40 = %ld\n", (uintptr_t)p % 40);
     mm_heap_stats();
 
     /**
@@ -72,91 +71,94 @@ int main(int argc, char **argv) {
      * 55
      */
     printf("============================Step 3============================\n");
-    printf("Reading repeating memory pattern with mm_read...\n");
-    uint8_t buffer[5];
-    mm_read(p, 0, buffer, 5);
+    printf("    mm_read(p, 0, pattern_buffer, 5)...\n");
+    uint8_t pattern_buffer[5];
+    mm_read(p, 0, pattern_buffer, 5);
     for (int j = 0; j < 5; j++) {
-        printf("%02x\n", buffer[j]);
+        printf("%02x\n", pattern_buffer[j]);
     }
 
     // Fill memory with some pattern
     printf("============================Step 4============================\n");
-    printf("Writing data to block 1 with mm_write...\n");
+    printf("    mm_write(p, 0, data, 128)...\n");
     uint8_t data[128];
     for (int i = 0; i < 128; i++) {
         data[i] = (uint8_t)(i + seed);
     }
 
     if (mm_write(p, 0, data, 128) != 128) {
-        fprintf(stderr, "mm_write detected corruption\n");
+        fprintf(stderr, "    mm_write detected corruption\n");
         mm_heap_stats();
         return 1;
     }
-    printf("mm_write passed.\n");
+    printf("    mm_write passed.\n");
     mm_heap_stats();
 
     // Read back and verify
     printf("============================Step 5============================\n");
-    printf("Reading data written to block 1 with mm_read...\n");
+    printf("    mm_read(p, 0, buf, 128)...\n");
     uint8_t buf[128];
     if (mm_read(p, 0, buf, 128) != 128) {
-        fprintf(stderr, "mm_read failed\n");
+        fprintf(stderr, "    mm_read failed\n");
         return 1;
     }
-    printf("mm_read passed.\n");
+    printf("    mm_read passed.\n");
     mm_heap_stats();
 
     for (int i = 0; i < 128; i++) {
         if (buf[i] != data[i]) {
-            fprintf(stderr, "Data mismatch at %d\n", i);
+            fprintf(stderr, "    Data mismatch at %d\n", i);
             return 1;
         }
     }
 
     // Allocating two more blocks.
     printf("============================Step 6============================\n");
-    printf("Allocating 2 more 128-byte blocks with mm_malloc...\n");
+    printf("    void *p_2 = mm_malloc(128)...\n");
 
     void *p_2 = mm_malloc(128);
     if (!p_2) {
-        fprintf(stderr, "mm_malloc failed.\n");
+        fprintf(stderr, "    mm_malloc failed.\n");
         return 1;
     }
-    printf("Check pointer p_2 = %p is 40-byte aligned:\n"
-        "p mod 40 = %ld\n", p_2, (uintptr_t)p_2 % 40);
-    printf("mm_malloc passed.\n");
+    printf("    p_2 mod 40 = %ld\n", (uintptr_t)p_2 % 40);
+    printf("    mm_malloc passed.\n");
 
+    printf("    void *p_3 = mm_malloc(128)...\n");
     void *p_3 = mm_malloc(128);
     if (!p_3) {
-        fprintf(stderr, "mm_malloc failed.\n");
+        fprintf(stderr, "    mm_malloc failed.\n");
         return 1;
     }
-    printf("Check pointer p_3 = %p is 40-byte aligned:\n"
-        "p mod 40 = %ld\n", p_3, (uintptr_t)p_3 % 40);
-    printf("mm_malloc passed.\n");
+    printf("    p_3 mod 40 = %ld\n", (uintptr_t)p_3 % 40);
+    printf("    mm_malloc passed.\n");
     mm_heap_stats();
 
     // Reallocating the third block.
     printf("============================Step 7============================\n");
-    printf("Reallocating block 3 to 256 bytes with mm_realloc...\n");
+    printf("    void *p_4 = mm_realloc(p_3, 256)...\n");
     void *p_4 = mm_realloc(p_3, 256);
     if (!p_4) {
-        fprintf(stderr, "mm_realloc failed.\n");
+        fprintf(stderr, "    mm_realloc failed.\n");
         return 1;
     }
-    printf("Check pointer p_4 = %p is 40-byte aligned:\n"
-        "p mod 40 = %ld\n", p_4, (uintptr_t)p_4 % 40);
-    printf("mm_realloc passed.\n");
+    printf("    p_4 mod 40 = %ld\n", (uintptr_t)p_4 % 40);
+    printf("    mm_realloc passed.\n");
     mm_heap_stats();
 
     // Free memory
     printf("============================Step 8============================\n");
-    printf("Freeing blocks 2 then 1 with mm_free...\n");
+    printf("    mm_free(p_2)...\n");
     mm_free(p_2);
+    mm_heap_stats();
+
+    printf("    mm_free(p)...\n");
     mm_free(p);
     mm_heap_stats();
 
+    printf("    mm_free(p_4)...\n");
     mm_free(p_4);
+    mm_heap_stats();
     printf("Basic test passed.\n");
 
     if (!storm) {
@@ -176,7 +178,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "mm_malloc failed.\n");
         return 1;
     }
-    printf("Check pointer p_5 = %p is 40-byte aligned:\n"
+    printf("Check pointer p_5 = %p is 40-byte aligned: "
         "p mod 40 = %ld\n", p_5, (uintptr_t)p_5 % 40);
 
     uint8_t data2[128];

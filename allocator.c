@@ -175,8 +175,7 @@ static inline BlockFooter *get_footer(BlockHeader *h) {
  * @param h A pointer to the current block.
  * @return uint8_t* A pointer to the next block.
  */
-static BlockHeader *block_next_header(BlockHeader *h)
-{
+static BlockHeader *block_next_header(BlockHeader *h) {
     if (!h)
         return NULL;
 
@@ -294,6 +293,7 @@ int is_block_valid(BlockHeader *h) {
  */
 void quarantine_block(BlockHeader *h) {
     if (!h) return;
+    if (debug) printf("Quarantining block at %p.\n", h);
     BlockFooter *f = get_footer(h);
 
     h->state = QUARANTINED;
@@ -333,8 +333,7 @@ static inline uint8_t compute_padding(BlockHeader *h) {
  * @param h A pointer to the block to split
  * @param needed The size of the block to be split
  */
-static void split_block(BlockHeader *h, size_t needed)
-{
+static void split_block(BlockHeader *h, size_t needed) {
     size_t original_size = h->size;
 
     /* Minimum viable block size (A + B) */
@@ -427,20 +426,28 @@ static void split_block(BlockHeader *h, size_t needed)
  * 
  * @param h A pointer to the newly freed block.
  */
-static void merge_free_blocks(BlockHeader *h)
-{
+static void merge_free_blocks(BlockHeader *h) {
     while (1) {
+        if (!h->next) {
+            if (debug) printf("No next block.\n");
+            return;
+        }
         BlockHeader *h2 = block_next_header(h);
 
-        if (!h2)
+        if (!h2) {
+            if (debug) printf("No block after %p.\n", h);
             return;
+        }
 
-        if (h2->state != FREE)
+        if (h2->state != FREE) {
+            if (debug) printf("Block at %p is not free.\n", h2);
             return;
+        }
 
         /* --------------------------------------------------------
          * Compute combined size of A+ B
          * -------------------------------------------------------- */
+        printf("Computing payload size.\n");
         uint8_t *payload1 = (uint8_t *)h + sizeof(BlockHeader);
         uint8_t *payload2 = (uint8_t *)h2 + sizeof(BlockHeader);
 
@@ -455,6 +462,7 @@ static void merge_free_blocks(BlockHeader *h)
         /* --------------------------------------------------------
          * Compute new padding (align next header)
          * -------------------------------------------------------- */
+        printf("Computing new padding.\n");
         size_t footer_end = (payload1 - g_heap)
                           + h->size
                           + sizeof(BlockFooter);
@@ -468,6 +476,7 @@ static void merge_free_blocks(BlockHeader *h)
         /* --------------------------------------------------------
          * Write merged footer for A
          * -------------------------------------------------------- */
+        printf("Writing new footer.\n");
         BlockFooter *f1 = (BlockFooter *)(payload1 + h->size);
 
         f1->consistency = BLOCK_FOOTER_CONSISTENCY;
@@ -501,19 +510,29 @@ static void merge_free_blocks(BlockHeader *h)
  * @return BlockHeader* A pointer to the header of the block if found, or NULL.
  */
 BlockHeader *ptr_to_block(void *ptr) {
-    if (!ptr) return NULL;
+    if (!ptr) {
+        if (debug) printf("No pointer provided.\n");
+        return NULL;
+    }
 
     uint8_t *p = ptr;
-    if (p < g_heap || p >= g_heap + g_heap_size) return NULL;
+    if (p < g_heap || p >= g_heap + g_heap_size) {
+        if (debug) printf("Pointer outside of heap bounds.");
+        return NULL;
+    }
 
     GlobalHeader *G = (GlobalHeader*)g_heap;
     uint32_t off = G->first_block;
 
     while (off) {
         BlockHeader *h = off_to_ptr(off);
-        if (!h) return NULL;
+        if (!h) {
+            if (debug) printf("No blocks in heap.\n");
+            return NULL;
+        }
 
         if (!is_block_valid(h)) {
+            if (debug) printf("Block at %p invalid, quarantining.\n", h);
             quarantine_block(h);
             off = h->next;
             continue;
@@ -522,12 +541,15 @@ BlockHeader *ptr_to_block(void *ptr) {
         uint8_t *start = (uint8_t*)h + sizeof(BlockHeader);
         uint8_t *end = start + h->size;
 
-        if (p >= start && p < end && h->state == USED)
+        if (p >= start && p < end && h->state == USED) {
+            if (debug) printf("Pointer falls within block at %p.\n", h);
             return h;
+        }
 
         off = h->next;
     }
 
+    if (debug) printf("Pointer %p falls within no blocks.\n", ptr);
     return NULL;
 }
 
@@ -589,7 +611,8 @@ int mm_init(uint8_t *heap, size_t heap_size) {
     uintptr_t raw_addr = (uintptr_t)(heap + sizeof(GlobalHeader));
 
     /* align to next multiple of 40 */
-    uintptr_t aligned_addr = (raw_addr + (ALIGN - 1)) & ~((uintptr_t)(ALIGN - 1));
+    uintptr_t aligned_addr = (raw_addr + (ALIGN - 1)) &
+    ~((uintptr_t)(ALIGN - 1));
 
     BlockHeader *h = (BlockHeader *)aligned_addr;
     uint32_t first_block_offset = (uint8_t *)h - heap;
@@ -758,12 +781,22 @@ int mm_write(void *ptr, size_t offset, const void *src, size_t len) {
  * @param ptr A pointer to the block to be freed.
  */
 void mm_free(void *ptr) {
-    if (!ptr) return;
+    printf("mm_free(%p)\n", ptr);
+    if (!ptr) {
+        if (debug) printf("    No pointer.\n");
+        return;
+    }
+    if (debug) printf("    Freeing block at %p.\n", ptr);
 
     BlockHeader *h = ptr_to_block(ptr);
-    if (!h) return;
+    if (!h) {
+        if (debug) printf("    No header to pointer.\n");
+        return;
+    }
+    if (debug) printf("    Header pointer = %p.\n", h);
 
     if (h->state != USED) {
+        if (debug) printf("    Block is not used, quarantining.\n");
         quarantine_block(h);
         return;
     }
@@ -782,6 +815,7 @@ void mm_free(void *ptr) {
     for (size_t i = 0; i < h->size; i++)
         payload[i] = UNUSED_PATTERN[i % 5];
 
+    if (debug) printf("    Mergeing free blocks...\n");
     merge_free_blocks(h);
 }
 
@@ -836,6 +870,32 @@ void *mm_realloc(void *ptr, size_t new_size) {
  *****************************************************************************/
 
 
+void print_block_stats(BlockHeader *h) {
+    BlockFooter *f = get_footer(h);
+    printf("Block @ %p:\n", h);
+    printf("  Header:\n");
+    printf("    consistency = %x\n", h->consistency);
+    printf("    size        = %u\n", h->size);
+    printf("    state       = %u (%s)\n",
+        h->state,
+        (h->state == FREE ? "FREE" :
+            (h->state == USED ? "USED" :
+                (h->state == QUARANTINED ? "QUARANTINED" : "???"))));
+    printf("    prev        = %u\n", h->prev);
+    printf("    next        = %u\n", h->next);
+    printf("    seq         = %u\n", h->seq);
+    printf("    crc         = %u\n", h->crc);
+
+    printf("  Footer:\n");
+    printf("    consistency = %x\n", f->consistency);
+    printf("    size        = %u\n", f->size);
+    printf("    seq         = %u\n", f->seq);
+    printf("    crc         = %u\n", f->crc);
+
+    printf("    valid       = %d\n\n", is_block_valid(h));
+}
+
+
 /**
  * @brief Output current heap usage and integrity statistics for debugging.
  * 
@@ -859,19 +919,7 @@ void mm_heap_stats(void) {
             printf("Invalid block offset %u\n", off);
             break;
         }
-
-        printf("Block @ offset %u:\n", off);
-        printf("    size   = %u\n", h->size);
-        printf("    state  = %u (%s)\n",
-            h->state,
-            (h->state == FREE ? "FREE" :
-             (h->state == USED ? "USED" :
-              (h->state == QUARANTINED ? "QUARANTINED" : "???"))));
-        printf("    prev   = %u\n", h->prev);
-        printf("    next   = %u\n", h->next);
-        printf("    seq    = %u\n", h->seq);
-        printf("    valid  = %d\n", is_block_valid(h));
-        printf("\n");
+        print_block_stats(h);
 
         off = h->next;
     }
