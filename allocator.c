@@ -53,8 +53,9 @@ typedef struct {
     uint32_t next;
     uint32_t seq;
     uint32_t crc;
+    uint32_t payload_crc;
     uint8_t  pad_size;      // NEW: padding after footer
-    uint8_t  _pad[11];      // keep structure at 40 bytes
+    uint8_t  _pad[7];      // keep structure at 40 bytes
 } BlockHeader;
 
 // ----- BLOCK FOOTER -----
@@ -72,7 +73,7 @@ static uint8_t *g_heap = NULL;
 static size_t g_heap_size = 0;
 
 // 1 is debug information should be displayed, 0 if not.
-static int debug = 1;
+static int debug = 0;
 
 
 /******************************************************************************
@@ -118,11 +119,16 @@ uint32_t get_header_crc(const BlockHeader *h) {
  * @brief Calculate the CRC32 checksum using the metadata in a block footer
  * excluding the CRC32 value.
  * 
- * @param h A pointer to the block footer.
+ * @param f A pointer to the block footer.
  * @return uint32_t The CRC32 checksum.
  */
 uint32_t get_footer_crc(const BlockFooter *f) {
     return crc32(f, offsetof(BlockFooter, crc));
+}
+
+
+uint32_t get_payload_crc(const BlockHeader *h) {
+    return crc32((void *)h + 40, h->size);
 }
 
 
@@ -170,35 +176,6 @@ static inline BlockFooter *get_footer(BlockHeader *h) {
 
 
 /**
- * @brief Computes a pointer to the next block.
- * 
- * @param h A pointer to the current block.
- * @return uint8_t* A pointer to the next block.
- */
-// static BlockHeader *block_next_header(BlockHeader *h) {
-//     if (!h)
-//         return NULL;
-
-//     uint8_t *payload = (uint8_t *)h + sizeof(BlockHeader);
-//     BlockFooter *f = (BlockFooter *)(payload + h->size);
-
-//     /* Absolute pointer to next header */
-//     uint8_t *next = (uint8_t *)f + sizeof(BlockFooter) + f->pad_size;
-
-//     /* Outside the heap? No next block */
-//     if (next >= g_heap + g_heap_size)
-//         return NULL;
-
-//     /* Alignment check (critical for deterministic layout) */
-//     if (((uintptr_t)next) % ALIGN != 0)
-//         return NULL;
-
-//     return (BlockHeader *)next;
-// }
-
-
-
-/**
  * @brief Checks the block metadata for validity.
  * 
  * @param h The pointer to the block header.
@@ -221,12 +198,6 @@ int is_block_valid(BlockHeader *h) {
         return 0;
     }
 
-    // Check if header is aligned => payload is aligned
-    // if ((uintptr_t)h % 40) {
-    //     if (debug) printf("Header is not aligned to 40-bytes:"
-    //         " %p MOD 40 = %ld.\n", h, (uintptr_t)h % 40);
-    //     return 0;
-    // }
 
     // Check the header metadata constant.
     if (h->consistency != BLOCK_HEADER_CONSISTENCY) {
@@ -243,6 +214,12 @@ int is_block_valid(BlockHeader *h) {
     // Check the block header checksum is consistent.
     if (h->crc != get_header_crc(h)) {
         if (debug) printf("Header checksum not valid.\n");
+        return 0;
+    }
+
+    // Check the payload checksum is consistent.
+    if (h->payload_crc != get_payload_crc(h)) {
+        if (debug) printf("Payload checksum not valid.\n");
         return 0;
     }
 
@@ -305,25 +282,6 @@ void quarantine_block(BlockHeader *h) {
 
     f->crc = get_footer_crc(f);
     h->crc = get_header_crc(h);
-}
-
-
-/**
- * @brief Computes the padding after the footer to align the next block.
- * 
- * @param h A pointer to the header of the current block.
- * @return uint8_t The padding required to align the next payload.
- */
-static inline uint8_t compute_padding(BlockHeader *h) {
-    uintptr_t footer_end =
-        (uintptr_t)h +
-        sizeof(BlockHeader) +
-        h->size +
-        sizeof(BlockFooter);
-
-    /* The NEXT HEADER must be aligned in real memory */
-    uint8_t pad = (ALIGN - (footer_end % ALIGN)) % ALIGN;
-    return pad;
 }
 
 
@@ -396,6 +354,7 @@ static void split_block(BlockHeader *h, size_t needed) {
     hB->next = h->next;
     hB->seq = 1;
     hB->crc = get_header_crc(hB);
+    hB->payload_crc = get_payload_crc(hB);
 
     /* Fix linked list */
     h->next = (uint8_t *)hB - g_heap;
@@ -494,6 +453,7 @@ static void merge_free_blocks(BlockHeader *h) {
          * -------------------------------------------------------- */
         h->next = h2->next;
         h->crc = get_header_crc(h);
+        h->payload_crc = get_payload_crc(h);
 
         if (h2->next) {
             BlockHeader *hn = (BlockHeader *)(g_heap + h2->next);
@@ -699,6 +659,7 @@ int mm_init(uint8_t *heap, size_t heap_size) {
     uint8_t *padptr = (uint8_t *)f + sizeof(BlockFooter);
     for (size_t i = 0; i < pad; i++)
         padptr[i] = UNUSED_PATTERN[i % 5];
+    h->payload_crc = get_payload_crc(h);
 
     return 0;
 }
@@ -733,6 +694,7 @@ void *mm_malloc(size_t size) {
 
             h->state = USED;
             h->seq++;
+            h->payload_crc = get_payload_crc(h);
 
             BlockFooter *f = get_footer(h);
             f->seq = h->seq;
@@ -804,6 +766,7 @@ int mm_write(void *ptr, size_t offset, const void *src, size_t len) {
 
     h->seq++;
     h->crc = get_header_crc(h);
+    h->payload_crc = get_payload_crc(h);
 
     BlockFooter *f = get_footer(h);
     f->seq = h->seq;
@@ -860,6 +823,7 @@ void mm_free(void *ptr) {
     uint8_t *payload = (uint8_t*)h + sizeof(BlockHeader);
     for (size_t i = 0; i < h->size; i++)
         payload[i] = UNUSED_PATTERN[i % 5];
+    h->payload_crc = get_payload_crc(h);
 
     if (debug) printf("    Mergeing free blocks...\n");
     merge_free_blocks(h);
