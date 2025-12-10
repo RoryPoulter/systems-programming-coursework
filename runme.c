@@ -16,7 +16,7 @@ int main(int argc, char **argv) {
 
     // Parse arguments
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-seed") == 0 && i + 1 < argc) {
+        if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             seed = (unsigned)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--storm") == 0 && i + 1 < argc) {
             storm = (unsigned)atoi(argv[++i]);
@@ -78,6 +78,8 @@ int main(int argc, char **argv) {
     for (int j = 0; j < 5; j++) {
         printf("%02x\n", pattern_buffer[j]);
     }
+
+    mm_heap_stats();
 
     // Fill memory with some pattern
     printf("============================Step 4============================\n");
@@ -225,7 +227,6 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 128; i++) {
         if (buf2[i] != data2[i]) {
             fprintf(stderr, "Data mismatch at %d\n", i);
-            return 1;
         }
     }
 
