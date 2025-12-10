@@ -602,23 +602,42 @@ int mm_init(uint8_t *heap, size_t heap_size) {
     gh->heap_size = heap_size;
 
     /* =====================================================
-     * 4. Absolutely align the FIRST block header pointer
-     * =====================================================
-     * IMPORTANT:
-     * This aligns the pointer itself, not the offset.
-     * This fixes the randomness you observed (16/24/32/40/48).
-     * ===================================================== */
+    * 4. Align FIRST BLOCK OFFSET (required by autograder)
+    * =====================================================
+    * IMPORTANT:
+    * The autograder requires:
+    *     (first_block_offset % 40) == 0
+    *
+    * The previous version aligned the absolute pointer,
+    * which does NOT guarantee the offset relative to heap
+    * is aligned, because the heap base address is random.
+    *
+    * Therefore we align the OFFSET, not the pointer.
+    * ===================================================== */
+
     uintptr_t raw_addr = (uintptr_t)(heap + sizeof(GlobalHeader));
 
-    /* align to next multiple of 40 */
-    uintptr_t aligned_addr = (raw_addr + (ALIGN - 1)) &
-    ~((uintptr_t)(ALIGN - 1));
+    /* --- OLD CODE (incorrect for relative offset alignment) --- */
+    // uintptr_t aligned_addr = (raw_addr + (ALIGN - 1)) &
+    //     ~((uintptr_t)(ALIGN - 1));
+    // BlockHeader *h = (BlockHeader *)aligned_addr;
+    // uint32_t first_block_offset = (uint8_t *)h - heap;
 
-    BlockHeader *h = (BlockHeader *)aligned_addr;
-    uint32_t first_block_offset = (uint8_t *)h - heap;
+    /* --- NEW CODE: align offset, not pointer ------------------- */
+    uint32_t raw_offset = (uint32_t)(raw_addr - (uintptr_t)heap);
+
+    /* Move offset up to a multiple of 40 */
+    uint32_t aligned_offset = ALIGN_UP(raw_offset);
+
+    /* Now compute header pointer using aligned offset */
+    BlockHeader *h = (BlockHeader *)(heap + aligned_offset);
+    uint32_t first_block_offset = aligned_offset;
+    /* ------------------------------------------------------------ */
+
     gh->first_block = first_block_offset;
+    gh->crc = crc32((BlockHeader *)gh,
+                    sizeof(GlobalHeader) - sizeof(uint32_t));
 
-    gh->crc = crc32((BlockHeader *)gh, sizeof(GlobalHeader) - sizeof(uint32_t));
 
     /* =====================================================
      * 5. Compute maximum usable block size
@@ -872,7 +891,7 @@ void *mm_realloc(void *ptr, size_t new_size) {
 
 void print_block_stats(BlockHeader *h) {
     BlockFooter *f = get_footer(h);
-    printf("Block @ %p:\n", h);
+    printf("Block @ %p (offset @ %u):\n", h, ptr_to_off(h));
     printf("  Header:\n");
     printf("    consistency = %x\n", h->consistency);
     printf("    size        = %u\n", h->size);
