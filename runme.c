@@ -59,7 +59,6 @@ int main(int argc, char **argv) {
         return 1;
     }
     printf("    mm_malloc passed.\n");
-    printf("    p mod 40 = %ld\n", (uintptr_t)p % 40);
     mm_heap_stats();
 
     /**
@@ -121,7 +120,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "    mm_malloc failed.\n");
         return 1;
     }
-    printf("    p_2 mod 40 = %ld\n", (uintptr_t)p_2 % 40);
     printf("    mm_malloc passed.\n");
 
     printf("    void *p_3 = mm_malloc(128)...\n");
@@ -130,7 +128,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "    mm_malloc failed.\n");
         return 1;
     }
-    printf("    p_3 mod 40 = %ld\n", (uintptr_t)p_3 % 40);
     printf("    mm_malloc passed.\n");
     mm_heap_stats();
 
@@ -142,7 +139,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "    mm_realloc failed.\n");
         return 1;
     }
-    printf("    p_4 mod 40 = %ld\n", (uintptr_t)p_4 % 40);
     printf("    mm_realloc passed.\n");
     mm_heap_stats();
 
@@ -178,8 +174,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "mm_malloc failed.\n");
         return 1;
     }
-    printf("Check pointer p_5 = %p is 40-byte aligned: "
-        "p mod 40 = %ld\n", p_5, (uintptr_t)p_5 % 40);
 
     uint8_t data2[128];
     for (int i = 0; i < 128; i++) {
