@@ -1,11 +1,4 @@
 // Copyright 2025 Rory Poulter
-
-/******************************************************************************
- *
- * Includes and Definitions
- *
- *****************************************************************************/
-
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -28,126 +21,123 @@ static uint8_t UNUSED_PATTERN[5] = {0xC0, 0xDE, 0xF0, 0x0D, 0x55};
 #define USED 1
 #define QUARANTINED 2
 
-
-/******************************************************************************
- *
- * Data Structures
- *
- *****************************************************************************/
-
+// 1 if debug information should be displayed, 0 if not.
+#define debug 0
 
 // ----- GLOBAL HEADER -----
 typedef struct {
-    uint32_t consistency;
-    uint32_t heap_size;
-    uint32_t first_block;
-    uint32_t crc;
+    uint32_t consistency;       // Metadata constant (0xDEADCE11)
+    uint32_t heap_size;         // Total heap size
+    uint32_t first_block;       // Offset to the first block
+    uint32_t checksum;          // Checksum over above data ^
 } GlobalHeader;
 
 // ----- BLOCK HEADER -----
 typedef struct {
-    uint32_t consistency;
-    uint32_t size;
-    uint32_t state;
-    uint32_t prev;
-    uint32_t next;
-    uint32_t seq;
-    uint32_t crc;
-    uint32_t payload_crc;
-    uint8_t  pad_size;      // NEW: padding after footer
-    uint8_t  _pad[7];      // keep structure at 40 bytes
+    uint32_t consistency;       // Metadata constant (0xC0DEBA5E)
+    uint32_t size;              // Payload size
+    uint32_t state;             // Block state (FREE, USED, QUARANTINED)
+    uint32_t prev;              // Offset to previous block, or 0 if none
+    uint32_t next;              // Offset to next block, or 0 if none
+    uint32_t seq;               // Counter for number of operations performed
+    uint32_t checksum;          // Checksum over above data ^
+    uint32_t payload_checksum;  // Checksum over payload data
+    uint8_t  pad_size;          // Padding size after the footer
+    uint8_t  _pad[7];           // 7-byte padding to align payload pointers
 } BlockHeader;
 
 // ----- BLOCK FOOTER -----
 typedef struct {
-    uint32_t consistency;
-    uint32_t size;
-    uint32_t seq;
-    uint32_t crc;
-    uint8_t  pad_size;      // NEW: padding mirrored
-    uint8_t  _pad[3];
+    uint32_t consistency;       // Metadata constant (0xBAD1DEA5)
+    uint32_t size;              // Mirrored payload size
+    uint32_t seq;               // Mirrored counter
+    uint32_t checksum;          // Checksum over above data ^
+    uint8_t  pad_size;          // NEW: padding mirrored
+    uint8_t  _pad[3];           // 3-byte padding to make 20 bytes
 } BlockFooter;
 
 // Globals
 static uint8_t *g_heap = NULL;
 static size_t g_heap_size = 0;
 
-// 1 is debug information should be displayed, 0 if not.
-static int debug = 0;
-
-
-/******************************************************************************
- *
- * Checksum Functions
- *
- *****************************************************************************/
-
 
 /**
- * @brief Calculates the CRC32 value.
+ * @brief Calculates the checksum using the fletcher-32 algorithm.
  * 
- * @param data The pointer to the data to calculate the CRC32 checksum
- * value for.
+ * @param data The pointer to the data to calculate the checksum value for.
  * @param len The length of the data.
- * @return uint32_t The CRC32 checksum value.
+ * @return uint32_t The checksum value.
  */
-uint32_t crc32(const void *data, size_t len) {
-    const uint8_t *p = data;
-    uint32_t crc = 0xFFFFFFFFu;
-    while (len--) {
-        crc ^= *p++;
-        for (unsigned k = 0; k < 8; k++)
-            crc = (crc >> 1) ^ (0xEDB88320u & (-(crc & 1)));
+uint32_t fletcher_32(const void *data, size_t len) {
+    const uint8_t *p = (const uint8_t *)data;
+
+    uint32_t sum1 = 0xffffu;
+    uint32_t sum2 = 0xffffu;
+
+    // Process input in 16-bit words
+    while (len > 1) {
+        uint16_t word = (uint16_t)(p[0] << 8 | p[1]);
+        sum1 = (sum1 + word) % 0xffffu;
+        sum2 = (sum2 + sum1) % 0xffffu;
+        p += 2;
+        len -= 2;
     }
-    return crc ^ 0xFFFFFFFFu;
+
+    // Handle odd byte (pad with zero)
+    if (len == 1) {
+        uint16_t word = (uint16_t)(p[0] << 8);
+        sum1 = (sum1 + word) % 0xffffu;
+        sum2 = (sum2 + sum1) % 0xffffu;
+    }
+
+    return (sum2 << 16) | sum1;
 }
 
 
 /**
- * @brief Calculate the CRC32 checksum using the metadata in a block header
- * excluding the CRC32 value.
+ * @brief Calculate the checksum using the metadata in a block header
+ * excluding the checksum value.
  * 
- * @param h A pointer to the block header.
- * @return uint32_t The CRC32 checksum.
+ * @param header_ptr A pointer to the block header.
+ * @return uint32_t The checksum for the header.
  */
-uint32_t get_header_crc(const BlockHeader *h) {
-    return crc32(h, offsetof(BlockHeader, crc));
+uint32_t get_header_checksum(const BlockHeader *header_ptr) {
+    return fletcher_32(header_ptr, offsetof(BlockHeader, checksum));
 }
 
 
 /**
- * @brief Calculate the CRC32 checksum using the metadata in a block footer
- * excluding the CRC32 value.
+ * @brief Calculate the checksum using the metadata in a block footer
+ * excluding the checksum value.
  * 
- * @param f A pointer to the block footer.
- * @return uint32_t The CRC32 checksum.
+ * @param footer_ptr A pointer to the block footer.
+ * @return uint32_t The checksum for the footer.
  */
-uint32_t get_footer_crc(const BlockFooter *f) {
-    return crc32(f, offsetof(BlockFooter, crc));
+uint32_t get_footer_checksum(const BlockFooter *footer_ptr) {
+    return fletcher_32(footer_ptr, offsetof(BlockFooter, checksum));
 }
 
 
-uint32_t get_payload_crc(const BlockHeader *h) {
-    return crc32((void *)h + 40, h->size);
+/**
+ * @brief calculate the checksum using the payload contents.
+ * 
+ * @param header_ptr A pointer to the block header.
+ * @return uint32_t The checksum for the payload.
+ */
+uint32_t get_payload_checksum(const BlockHeader *header_ptr) {
+    return fletcher_32((void *)header_ptr + 40, header_ptr->size);
 }
-
-
-/******************************************************************************
- *
- * Helper Functions
- *
- *****************************************************************************/
 
 
 /**
  * @brief Generates an offset corresponding to a pointer.
  * 
- * @param p The pointer.
+ * @param ptr The pointer.
  * @return uint32_t The offset corresponding to the pointer.
  */
-static inline uint32_t ptr_to_off(void *p) {
-    if (!p) return 0;
-    return (uint32_t)((uint8_t*)p - g_heap);
+static inline uint32_t ptr_to_offset(void *ptr) {
+    if (!ptr) return 0;
+    return (uint32_t)((uint8_t*)ptr - g_heap);
 }
 
 
@@ -157,9 +147,9 @@ static inline uint32_t ptr_to_off(void *p) {
  * @param offset The offset of the pointer to be generated.
  * @return void* The pointer corresponding to the offset.
  */
-static inline void *off_to_ptr(uint32_t off) {
-    if (off == 0 || off >= g_heap_size) return NULL;
-    return g_heap + off;
+static inline void *offset_to_ptr(uint32_t offset) {
+    if (offset == 0 || offset >= g_heap_size) return NULL;
+    return g_heap + offset;
 }
 
 
@@ -167,91 +157,88 @@ static inline void *off_to_ptr(uint32_t off) {
  * @brief Get a pointer to the footer from a pointer of the header and the 
  * block size.
  * 
- * @param h The header pointer.
+ * @param header_ptr The header pointer.
  * @return * BlockFooter* A pointer to the footer.
  */
-static inline BlockFooter *get_footer(BlockHeader *h) {
-    return (BlockFooter*)((uint8_t*)h + sizeof(BlockHeader) + h->size);
+static inline BlockFooter *get_footer_ptr(BlockHeader *header_ptr) {
+    return (BlockFooter*)((uint8_t*)header_ptr + sizeof(BlockHeader) +
+    header_ptr->size);
 }
 
 
 /**
  * @brief Checks the block metadata for validity.
  * 
- * @param h The pointer to the block header.
+ * @param header_ptr The pointer to the block header.
  * @return * int A boolean indicating if the block is valid.
  */
-int is_block_valid(BlockHeader *h) {
+int is_block_valid(BlockHeader *header_ptr) {
     // Input sanitisation
-    if (debug != 1 && debug != 0) {
-        debug = 0;
-    }
-    if (!h) {
+    if (!header_ptr) {
         if (debug) printf("No header passed.\n");
         return 0;
     }
 
     // Check if header pointer is within the heap bounds.
-    if ((uint8_t*)h < g_heap || (uint8_t*)h + sizeof(BlockHeader) >
-    g_heap + g_heap_size) {
+    if ((uint8_t*)header_ptr < g_heap || (uint8_t*)header_ptr +
+    sizeof(BlockHeader) > g_heap + g_heap_size) {
         if (debug) printf("Header is out of heap bounds.\n");
         return 0;
     }
 
-
     // Check the header metadata constant.
-    if (h->consistency != BLOCK_HEADER_CONSISTENCY) {
+    if (header_ptr->consistency != BLOCK_HEADER_CONSISTENCY) {
         if (debug) printf("Header metadata constant is invalid.\n");
         return 0;
     }
 
     // Check the block size does not exceed the heap size.
-    if (h->size > g_heap_size) {
+    if (header_ptr->size > g_heap_size) {
         if (debug) printf("Block size exceeds heap size.\n");
         return 0;
     }
 
     // Check the block header checksum is consistent.
-    if (h->crc != get_header_crc(h)) {
+    if (header_ptr->checksum != get_header_checksum(header_ptr)) {
         if (debug) printf("Header checksum not valid.\n");
         return 0;
     }
 
     // Check the payload checksum is consistent.
-    if (h->payload_crc != get_payload_crc(h)) {
+    if (header_ptr->payload_checksum != get_payload_checksum(header_ptr)) {
         if (debug) printf("Payload checksum not valid.\n");
         return 0;
     }
 
     // Retrieve the footer pointer from the header.
-    BlockFooter *f = get_footer(h);
+    BlockFooter *footer_ptr = get_footer_ptr(header_ptr);
 
     // Check if the footer is beyond the heap bounds.
-    if ((uint8_t*)f + sizeof(BlockFooter) > g_heap + g_heap_size) {
+    if ((uint8_t*)footer_ptr + sizeof(BlockFooter) > g_heap + g_heap_size) {
         if (debug) printf("Footer is out of heap bounds.\n");
         return 0;
     }
 
     // Check the footer metadata constant.
-    if (f->consistency != BLOCK_FOOTER_CONSISTENCY) {
+    if (footer_ptr->consistency != BLOCK_FOOTER_CONSISTENCY) {
         if (debug) printf("Footer metadata constant is invalid.\n");
         return 0;
     }
 
     // Check the footer size equals the header size.
-    if (f->size != h->size) {
+    if (footer_ptr->size != header_ptr->size) {
         if (debug) printf("Footer size does not match header.\n");
         return 0;
     }
 
     // Check the footer sequence number equals the header sequence number.
-    if (f->seq != h->seq) {
+    if (footer_ptr->seq != header_ptr->seq) {
         if (debug) printf("Footer sequence does not match header.\n");
         return 0;
     }
 
     // Check the block footer checksum is consistent.
-    if (f->crc != get_footer_crc(f)) {
+    if (footer_ptr->checksum != get_footer_checksum(footer_ptr)) {
         if (debug) printf("Footer checksum not valid.\n");
         return 0;
     }
@@ -266,207 +253,202 @@ int is_block_valid(BlockHeader *h) {
  * @brief Updates the metadata of a block when it has been corrupted so the
  * memory allocator will quarantine it.
  * 
- * @param h A pointer to the header of the corrupted block.
+ * @param header_ptr A pointer to the header of the corrupted block.
  */
-void quarantine_block(BlockHeader *h) {
-    if (!h) return;
-    if (debug) printf("Quarantining block at %p.\n", h);
-    BlockFooter *f = get_footer(h);
+void quarantine_block(BlockHeader *header_ptr) {
+    // If not pointer is passed.
+    if (!header_ptr) return;
+    if (debug) printf("Quarantining block at %p.\n", header_ptr);
+    BlockFooter *footer_ptr = get_footer_ptr(header_ptr);
 
-    h->state = QUARANTINED;
-    h->seq++;
+    // Update the block metadata.
+    header_ptr->state = QUARANTINED;
+    header_ptr->seq++;
 
-    f->seq = h->seq;
-    f->size = h->size;
-    f->pad_size = h->pad_size;
+    footer_ptr->seq = header_ptr->seq;
+    footer_ptr->size = header_ptr->size;
+    footer_ptr->pad_size = header_ptr->pad_size;
 
-    f->crc = get_footer_crc(f);
-    h->crc = get_header_crc(h);
+    footer_ptr->checksum = get_footer_checksum(footer_ptr);
+    header_ptr->checksum = get_header_checksum(header_ptr);
 }
 
 
 /**
- * @brief Splits a block into two parts and sets the new partition to `FREE`
+ * @brief Splits a block into two parts and sets the new partition to `FREE`.
  * 
- * @param h A pointer to the block to split
- * @param needed The size of the block to be split
+ * @param header_ptr A pointer to the block to split.
+ * @param needed The size of the new memory partition.
  */
-static void split_block(BlockHeader *h, size_t needed) {
-    size_t original_size = h->size;
+static void split_block(BlockHeader *header_ptr, size_t needed) {
+    // Store the original payload size.
+    size_t original_size = header_ptr->size;
 
-    /* Minimum viable block size (A + B) */
-    size_t min_block_size =
-        sizeof(BlockHeader) + 1 + sizeof(BlockFooter) + ALIGN;
+    // Minimum viable block size.
+    size_t min_block_size = sizeof(BlockHeader) + 1 + sizeof(BlockFooter) +
+    ALIGN;
 
-    if (original_size - needed < min_block_size)
-        return;  // not enough room to split
-
-    /* ------------------------------------------------------------
-     * Shrink A to "needed" and build its footer so we can compute
-     * where the aligned B header will land.
-     * ------------------------------------------------------------ */
-    uint8_t *payloadA = (uint8_t *)h + sizeof(BlockHeader);
-    h->size = needed;
-
-    BlockFooter *fA = (BlockFooter *)(payloadA + h->size);
-
-    size_t fA_end = (uint8_t *)fA - g_heap + sizeof(BlockFooter);
-    size_t padA   = (ALIGN - (fA_end % ALIGN)) % ALIGN;
-
-    h->pad_size = padA;
-    h->seq++;
-    h->crc = get_header_crc(h);
-
-    /* Write footer for A */
-    fA->consistency = BLOCK_FOOTER_CONSISTENCY;
-    fA->size = h->size;
-    fA->seq = h->seq;
-    fA->pad_size = padA;
-    fA->crc = get_footer_crc(fA);
-
-    /* Padding A */
-    uint8_t *padA_ptr = (uint8_t *)fA + sizeof(BlockFooter);
-    for (size_t i = 0; i < padA; i++)
-        padA_ptr[i] = UNUSED_PATTERN[i % 5];
-
-    /* ------------------------------------------------------------
-     * Compute aligned start of block B
-     * ------------------------------------------------------------ */
-    BlockHeader *hB = (BlockHeader *)(padA_ptr + padA);
-
-    /* ------------------------------------------------------------
-     * Compute new size of block B
-     * ------------------------------------------------------------ */
-    uint8_t *startA = (uint8_t *)h;
-    uint8_t *startB = (uint8_t *)hB;
-
-    size_t bytes_used_by_A = startB - startA;
-    size_t sizeB = original_size - bytes_used_by_A;
-
-    /* ------------------------------------------------------------
-     * Build B header
-     * ------------------------------------------------------------ */
-    hB->consistency = BLOCK_HEADER_CONSISTENCY;
-    hB->state = FREE;
-    hB->size = sizeB;
-    hB->pad_size = 0;  // temp; will be set by future operations
-    hB->prev = (uint32_t)(startA - g_heap);
-    hB->next = h->next;
-    hB->seq = 1;
-    hB->crc = get_header_crc(hB);
-    hB->payload_crc = get_payload_crc(hB);
-
-    /* Fix linked list */
-    h->next = (uint8_t *)hB - g_heap;
-    h->crc = get_header_crc(h);
-
-    if (hB->next) {
-        BlockHeader *hn = (BlockHeader *)(g_heap + hB->next);
-        hn->prev = (uint8_t *)hB - g_heap;
-        hn->crc = get_header_crc(hn);
+    // If there is not enough room to split the block.
+    if (original_size - needed < min_block_size) {
+        if (debug) printf("Not enough room to split.\n");
+        return;
     }
 
-    /* ------------------------------------------------------------
-     * Build B footer (with pad_size = 0 for now)
-     * ------------------------------------------------------------ */
-    uint8_t *payloadB = (uint8_t *)hB + sizeof(BlockHeader);
-    BlockFooter *fB = (BlockFooter *)(payloadB + hB->size);
+    // Update block A metadata.
+    uint8_t *payload_a_ptr = (uint8_t *)header_ptr + sizeof(BlockHeader);
+    header_ptr->size = needed;
+    BlockFooter *footer_a_ptr = (BlockFooter *)(payload_a_ptr +
+        header_ptr->size);
 
-    fB->consistency = BLOCK_FOOTER_CONSISTENCY;
-    fB->size = hB->size;
-    fB->seq = hB->seq;
-    fB->pad_size = 0;  // no pad yet
-    fB->crc = get_footer_crc(fB);
+    size_t footer_a_end = (uint8_t *)footer_a_ptr - g_heap +
+    sizeof(BlockFooter);
+    size_t footer_a_pad = (ALIGN - (footer_a_end % ALIGN)) % ALIGN;
+
+    header_ptr->pad_size = footer_a_pad;
+    header_ptr->seq++;
+    header_ptr->checksum = get_header_checksum(header_ptr);
+
+    // Create a new footer for block A.
+    footer_a_ptr->consistency = BLOCK_FOOTER_CONSISTENCY;
+    footer_a_ptr->size = header_ptr->size;
+    footer_a_ptr->seq = header_ptr->seq;
+    footer_a_ptr->pad_size = footer_a_pad;
+    footer_a_ptr->checksum = get_footer_checksum(footer_a_ptr);
+
+    // Add the padding to align block B.
+    uint8_t *pad_a_ptr = (uint8_t *)footer_a_ptr + sizeof(BlockFooter);
+    for (size_t i = 0; i < footer_a_pad; i++)
+        pad_a_ptr[i] = UNUSED_PATTERN[i % 5];
+
+    // Create block B header.
+    BlockHeader *header_b_ptr = (BlockHeader *)(pad_a_ptr + footer_a_pad);
+
+    // Calculate the size of block B.
+    uint8_t *start_a = (uint8_t *)header_ptr;
+    uint8_t *start_b = (uint8_t *)header_b_ptr;
+    size_t bytes_used_by_a = start_b - start_a;
+    size_t block_b_size = original_size - bytes_used_by_a;
+
+    // Populate block B header metadata.
+    header_b_ptr->consistency = BLOCK_HEADER_CONSISTENCY;
+    header_b_ptr->state = FREE;
+    header_b_ptr->size = block_b_size;
+    header_b_ptr->pad_size = 0;
+    header_b_ptr->prev = (uint32_t)(start_a - g_heap);
+    header_b_ptr->next = header_ptr->next;
+    header_b_ptr->seq = 1;
+    header_b_ptr->checksum = get_header_checksum(header_b_ptr);
+    header_b_ptr->payload_checksum = get_payload_checksum(header_b_ptr);
+
+    // Fix the linked list.
+    header_ptr->next = (uint8_t *)header_b_ptr - g_heap;
+    header_ptr->checksum = get_header_checksum(header_ptr);
+
+    if (header_b_ptr->next) {
+        BlockHeader *hn = (BlockHeader *)(g_heap + header_b_ptr->next);
+        hn->prev = (uint8_t *)header_b_ptr - g_heap;
+        hn->checksum = get_header_checksum(hn);
+    }
+
+    // Create a footer for block B and populate metadata.
+    uint8_t *block_b_payload = (uint8_t *)header_b_ptr + sizeof(BlockHeader);
+    BlockFooter *footer_b_ptr = (BlockFooter *)(block_b_payload +
+        header_b_ptr->size);
+
+    footer_b_ptr->consistency = BLOCK_FOOTER_CONSISTENCY;
+    footer_b_ptr->size = header_b_ptr->size;
+    footer_b_ptr->seq = header_b_ptr->seq;
+    footer_b_ptr->pad_size = 0;  // no pad yet
+    footer_b_ptr->checksum = get_footer_checksum(footer_b_ptr);
 }
 
 
 /**
  * @brief Merges adjacent free valid blocks into one contiguous block.
  * 
- * @param h A pointer to the newly freed block.
+ * @param header_ptr A pointer to the newly freed block.
  */
-static void merge_free_blocks(BlockHeader *h) {
+static void merge_free_blocks(BlockHeader *header_ptr) {
     while (1) {
-        if (!h->next) {
-            if (debug) printf("No next block from %p.\n", h);
+        // If there are no following blocks.
+        if (!header_ptr->next) {
+            if (debug) printf("No next block from %p.\n", header_ptr);
             return;
         }
-        BlockHeader *h2 = off_to_ptr(h->next);
+        BlockHeader *header_b_ptr = offset_to_ptr(header_ptr->next);
 
-        if (!h2) {
+        // If h->next does not point to a block.
+        if (!header_b_ptr) {
             if (debug) printf("h->next does not point to a block.\n");
             return;
         }
 
-        if (h2->state != FREE) {
-            if (debug) printf("Block at %p is not free.\n", h2);
+        // If the next block is not free.
+        if (header_b_ptr->state != FREE) {
+            if (debug) printf("Block at %p is not free.\n", header_b_ptr);
             return;
         }
 
-        /* --------------------------------------------------------
-         * Compute combined size of A+ B
-         * -------------------------------------------------------- */
-        printf("Computing payload size.\n");
-        uint8_t *payload1 = (uint8_t *)h + sizeof(BlockHeader);
-        uint8_t *payload2 = (uint8_t *)h2 + sizeof(BlockHeader);
+        // Calculate merged payload size.
+        uint8_t *block_a_payload_ptr = (uint8_t *)header_ptr +
+        sizeof(BlockHeader);
 
-        BlockFooter *f2 = (BlockFooter *)(payload2 + h2->size);
+        BlockFooter *footer_b_ptr = get_footer_ptr(header_b_ptr);
 
-        uint8_t *end2 = (uint8_t *)f2 + sizeof(BlockFooter) + f2->pad_size;
+        uint8_t *block_b_end_ptr = (uint8_t *)footer_b_ptr +
+        sizeof(BlockFooter) + footer_b_ptr->pad_size;
 
-        size_t new_size = end2 - payload1 - sizeof(BlockFooter);
+        size_t new_size = block_b_end_ptr - block_a_payload_ptr -
+        sizeof(BlockFooter);
 
-        h->size = new_size;
+        header_ptr->size = new_size;
 
-        /* --------------------------------------------------------
-         * Compute new padding (align next header)
-         * -------------------------------------------------------- */
-        printf("Computing new padding.\n");
-        size_t footer_end = (payload1 - g_heap)
-                          + h->size
+        // Calculate the new padding.
+        size_t footer_end = (block_a_payload_ptr - g_heap)
+                          + header_ptr->size
                           + sizeof(BlockFooter);
 
         size_t pad = (ALIGN - (footer_end % ALIGN)) % ALIGN;
 
-        h->pad_size = pad;
-        h->seq++;
-        h->crc = get_header_crc(h);
+        header_ptr->pad_size = pad;
+        header_ptr->seq++;
+        header_ptr->checksum = get_header_checksum(header_ptr);
 
-        /* --------------------------------------------------------
-         * Write merged footer for A
-         * -------------------------------------------------------- */
-        printf("Writing new footer.\n");
-        BlockFooter *f1 = (BlockFooter *)(payload1 + h->size);
+        // Write a new footer for the merged block.
+        BlockFooter *footer_a_ptr = (BlockFooter *)(block_a_payload_ptr +
+            header_ptr->size);
 
-        f1->consistency = BLOCK_FOOTER_CONSISTENCY;
-        f1->size = h->size;
-        f1->seq = h->seq;
-        f1->pad_size = pad;
-        f1->crc = get_footer_crc(f1);
+        footer_a_ptr->consistency = BLOCK_FOOTER_CONSISTENCY;
+        footer_a_ptr->size = header_ptr->size;
+        footer_a_ptr->seq = header_ptr->seq;
+        footer_a_ptr->pad_size = pad;
+        footer_a_ptr->checksum = get_footer_checksum(footer_a_ptr);
 
-        uint8_t *padptr = (uint8_t *)f1 + sizeof(BlockFooter);
+        uint8_t *pad_ptr = (uint8_t *)footer_a_ptr + sizeof(BlockFooter);
         for (size_t i = 0; i < pad; i++)
-            padptr[i] = UNUSED_PATTERN[i % 5];
+            pad_ptr[i] = UNUSED_PATTERN[i % 5];
 
-        /* --------------------------------------------------------
-         * Fix free list links
-         * -------------------------------------------------------- */
-        h->next = h2->next;
-        h->crc = get_header_crc(h);
-        h->payload_crc = get_payload_crc(h);
+        // Fix the link list.
+        header_ptr->next = header_b_ptr->next;
+        header_ptr->checksum = get_header_checksum(header_ptr);
+        header_ptr->payload_checksum = get_payload_checksum(header_ptr);
 
-        if (h2->next) {
-            BlockHeader *hn = (BlockHeader *)(g_heap + h2->next);
-            hn->prev = (uint8_t *)h - g_heap;
-            hn->crc = get_header_crc(hn);
+        // If there is a next block, update the linked list backwards.
+        if (header_b_ptr->next) {
+            BlockHeader *hn = (BlockHeader *)(g_heap + header_b_ptr->next);
+            hn->prev = (uint8_t *)header_ptr - g_heap;
+            hn->checksum = get_header_checksum(hn);
         }
-        if (h->prev) {
-            BlockHeader *ph = off_to_ptr(h->prev);
-            if (is_block_valid(ph) && ph->state == FREE) {
-                merge_free_blocks(ph);
+        // If there is a previous block.
+        if (header_ptr->prev) {
+            BlockHeader *prev_header_ptr = offset_to_ptr(header_ptr->prev);
+            // If the block is free and valid, recurse with it.
+            if (is_block_valid(prev_header_ptr) &&
+            prev_header_ptr->state == FREE) {
+                merge_free_blocks(prev_header_ptr);
             }
         } else {
-            printf("No previous block.\n");
+            if (debug) printf("No previous block.\n");
         }
     }
 }
@@ -489,45 +471,38 @@ BlockHeader *ptr_to_block(void *ptr) {
         if (debug) printf("Pointer outside of heap bounds.");
         return NULL;
     }
-
     GlobalHeader *G = (GlobalHeader*)g_heap;
-    uint32_t off = G->first_block;
+    uint32_t offset = G->first_block;
 
-    while (off) {
-        BlockHeader *h = off_to_ptr(off);
-        if (!h) {
+    // Traverse the list until a block containing the pointer is found.
+    while (offset) {
+        BlockHeader *header_ptr = offset_to_ptr(offset);
+        if (!header_ptr) {
             if (debug) printf("No blocks in heap.\n");
             return NULL;
         }
 
-        if (!is_block_valid(h)) {
-            if (debug) printf("Block at %p invalid, quarantining.\n", h);
-            quarantine_block(h);
-            off = h->next;
+        if (!is_block_valid(header_ptr)) {
+            if (debug) printf("Block at %p invalid, quarantining.\n",
+                header_ptr);
+            quarantine_block(header_ptr);
+            offset = header_ptr->next;
             continue;
         }
 
-        uint8_t *start = (uint8_t*)h + sizeof(BlockHeader);
-        uint8_t *end = start + h->size;
-
-        if (p >= start && p < end && h->state == USED) {
-            if (debug) printf("Pointer falls within block at %p.\n", h);
-            return h;
+        uint8_t *payload_start_ptr = (uint8_t*)header_ptr + sizeof(BlockHeader);
+        uint8_t *payload_end_ptr = payload_start_ptr + header_ptr->size;
+        if (p >= payload_start_ptr && p < payload_end_ptr &&
+            header_ptr->state == USED) {
+            if (debug) printf("Pointer falls within block at %p.\n",
+                header_ptr);
+            return header_ptr;
         }
-
-        off = h->next;
+        offset = header_ptr->next;
     }
-
     if (debug) printf("Pointer %p falls within no blocks.\n", ptr);
     return NULL;
 }
-
-
-/******************************************************************************
- *
- * Memory Allocator Functions
- *
- *****************************************************************************/
 
 
 /**
@@ -539,15 +514,13 @@ BlockHeader *ptr_to_block(void *ptr) {
  * @return int 0 on success, non-zero on failure.
  */
 int mm_init(uint8_t *heap, size_t heap_size) {
-    if (!heap || heap_size < 512)
-        return -1;
+    // if (!heap || heap_size < 512)
+    //     return -1;
 
     g_heap = heap;
     g_heap_size = heap_size;
 
-    /* =====================================================
-     * 1. Detect unused pattern BEFORE clearing heap
-     * ===================================================== */
+    // Detect unused pattern
     uint8_t detected[5];
     memcpy(detected, heap, 5);
 
@@ -558,112 +531,65 @@ int mm_init(uint8_t *heap, size_t heap_size) {
     if (nonzero)
         memcpy(UNUSED_PATTERN, detected, 5);
 
-    /* =====================================================
-     * 2. Clear heap
-     * ===================================================== */
     memset(heap, 0, heap_size);
 
-    /* =====================================================
-     * 3. Create global header at heap start
-     * ===================================================== */
-    GlobalHeader *gh = (GlobalHeader *)heap;
-    gh->consistency = GLOBAL_HEADER_CONSISTENCY;
-    gh->heap_size = heap_size;
+    // Create the GlobalHeader.
+    GlobalHeader *global_header_ptr = (GlobalHeader *)heap;
+    global_header_ptr->consistency = GLOBAL_HEADER_CONSISTENCY;
+    global_header_ptr->heap_size = heap_size;
 
-    /* =====================================================
-    * 4. Align FIRST BLOCK OFFSET (required by autograder)
-    * =====================================================
-    * IMPORTANT:
-    * The autograder requires:
-    *     (first_block_offset % 40) == 0
-    *
-    * The previous version aligned the absolute pointer,
-    * which does NOT guarantee the offset relative to heap
-    * is aligned, because the heap base address is random.
-    *
-    * Therefore we align the OFFSET, not the pointer.
-    * ===================================================== */
-
+    // Calculate aligned offset for first block.
     uintptr_t raw_addr = (uintptr_t)(heap + sizeof(GlobalHeader));
-
-    /* --- OLD CODE (incorrect for relative offset alignment) --- */
-    // uintptr_t aligned_addr = (raw_addr + (ALIGN - 1)) &
-    //     ~((uintptr_t)(ALIGN - 1));
-    // BlockHeader *h = (BlockHeader *)aligned_addr;
-    // uint32_t first_block_offset = (uint8_t *)h - heap;
-
-    /* --- NEW CODE: align offset, not pointer ------------------- */
     uint32_t raw_offset = (uint32_t)(raw_addr - (uintptr_t)heap);
 
-    /* Move offset up to a multiple of 40 */
     uint32_t aligned_offset = ALIGN_UP(raw_offset);
 
-    /* Now compute header pointer using aligned offset */
-    BlockHeader *h = (BlockHeader *)(heap + aligned_offset);
+    BlockHeader *header_ptr = (BlockHeader *)(heap + aligned_offset);
     uint32_t first_block_offset = aligned_offset;
-    /* ------------------------------------------------------------ */
 
-    gh->first_block = first_block_offset;
-    gh->crc = crc32((BlockHeader *)gh,
+    global_header_ptr->first_block = first_block_offset;
+    global_header_ptr->checksum = fletcher_32((BlockHeader *)global_header_ptr,
                     sizeof(GlobalHeader) - sizeof(uint32_t));
 
+    // Calculate maximum payload size.
+    uint8_t *payload_ptr = (uint8_t *)header_ptr + sizeof(BlockHeader);
 
-    /* =====================================================
-     * 5. Compute maximum usable block size
-     * ===================================================== */
-    uint8_t *payload = (uint8_t *)h + sizeof(BlockHeader);
+    size_t usable = heap_size - first_block_offset - sizeof(BlockHeader) -
+    sizeof(BlockFooter);
 
-    size_t usable = heap_size
-                  - first_block_offset
-                  - sizeof(BlockHeader)
-                  - sizeof(BlockFooter);
-
-    /* =====================================================
-     * 6. Compute padding so the NEXT header is 40-byte aligned
-     * ===================================================== */
-    size_t footer_end = first_block_offset
-                      + sizeof(BlockHeader)
-                      + usable
-                      + sizeof(BlockFooter);
+    // Calculate the padding for the next block to align it.
+    size_t footer_end = first_block_offset + sizeof(BlockHeader) + usable +
+    sizeof(BlockFooter);
 
     size_t pad = (ALIGN - (footer_end % ALIGN)) % ALIGN;
-
     usable -= pad;
 
-    /* =====================================================
-     * 7. Write block header
-     * ===================================================== */
-    h->consistency = BLOCK_HEADER_CONSISTENCY;
-    h->state = FREE;
-    h->size = usable;
-    h->pad_size = pad;
-    h->prev = 0;
-    h->next = 0;
-    h->seq = 1;
-    h->crc = get_header_crc(h);
+    // Populate the block header metadata.
+    header_ptr->consistency = BLOCK_HEADER_CONSISTENCY;
+    header_ptr->state = FREE;
+    header_ptr->size = usable;
+    header_ptr->pad_size = pad;
+    header_ptr->prev = 0;
+    header_ptr->next = 0;
+    header_ptr->seq = 1;
+    header_ptr->checksum = get_header_checksum(header_ptr);
 
-    /* =====================================================
-     * 8. Write block footer
-     * ===================================================== */
-    BlockFooter *f = (BlockFooter *)(payload + h->size);
+    // Create the block footer and populate metadata.
+    BlockFooter *footer_ptr = (BlockFooter *)(payload_ptr + header_ptr->size);
 
-    f->consistency = BLOCK_FOOTER_CONSISTENCY;
-    f->size = h->size;
-    f->seq = h->seq;
-    f->pad_size = pad;
-    f->crc = get_footer_crc(f);
+    footer_ptr->consistency = BLOCK_FOOTER_CONSISTENCY;
+    footer_ptr->size = header_ptr->size;
+    footer_ptr->seq = header_ptr->seq;
+    footer_ptr->pad_size = pad;
+    footer_ptr->checksum = get_footer_checksum(footer_ptr);
 
-    /* =====================================================
-     * 9. Write padding pattern after footer
-     * ===================================================== */
-    uint8_t *padptr = (uint8_t *)f + sizeof(BlockFooter);
+    // Write the unused pattern.
+    uint8_t *pad_ptr = (uint8_t *)footer_ptr + sizeof(BlockFooter);
     for (size_t i = 0; i < pad; i++)
-        padptr[i] = UNUSED_PATTERN[i % 5];
-    h->payload_crc = get_payload_crc(h);
-
+        pad_ptr[i] = UNUSED_PATTERN[i % 5];
+    header_ptr->payload_checksum = get_payload_checksum(header_ptr);
     return 0;
 }
-
 
 
 /**
@@ -675,40 +601,37 @@ int mm_init(uint8_t *heap, size_t heap_size) {
 void *mm_malloc(size_t size) {
     if (!g_heap || size == 0) return NULL;
 
-    // size = ALIGN_UP(size);
-    GlobalHeader *G = (GlobalHeader*)g_heap;
-    uint32_t off = G->first_block;
+    GlobalHeader *global_header_ptr = (GlobalHeader*)g_heap;
+    uint32_t offset = global_header_ptr->first_block;
 
-    while (off) {
-        BlockHeader *h = off_to_ptr(off);
-        if (!h) return NULL;
+    while (offset) {
+        BlockHeader *header_ptr = offset_to_ptr(offset);
+        if (!header_ptr) return NULL;
 
-        if (!is_block_valid(h)) {
-            quarantine_block(h);
-            off = h->next;
+        if (!is_block_valid(header_ptr)) {
+            quarantine_block(header_ptr);
+            offset = header_ptr->next;
             continue;
         }
 
-        if (h->state == FREE && h->size >= size) {
-            split_block(h, size);
+        if (header_ptr->state == FREE && header_ptr->size >= size) {
+            split_block(header_ptr, size);
 
-            h->state = USED;
-            h->seq++;
-            h->payload_crc = get_payload_crc(h);
+            header_ptr->state = USED;
+            header_ptr->seq++;
+            header_ptr->payload_checksum = get_payload_checksum(header_ptr);
 
-            BlockFooter *f = get_footer(h);
-            f->seq = h->seq;
-            f->size = h->size;
-            f->pad_size = h->pad_size;
-            f->crc = get_footer_crc(f);
+            BlockFooter *footer_ptr = get_footer_ptr(header_ptr);
+            footer_ptr->seq = header_ptr->seq;
+            footer_ptr->size = header_ptr->size;
+            footer_ptr->pad_size = header_ptr->pad_size;
+            footer_ptr->checksum = get_footer_checksum(footer_ptr);
 
-            h->crc = get_header_crc(h);
-            return (uint8_t*)h + sizeof(BlockHeader);
+            header_ptr->checksum = get_header_checksum(header_ptr);
+            return (uint8_t*)header_ptr + sizeof(BlockHeader);
         }
-
-        off = h->next;
+        offset = header_ptr->next;
     }
-
     return NULL;
 }
 
@@ -724,18 +647,16 @@ void *mm_malloc(size_t size) {
  * detected.
  */
 int mm_read(void *ptr, size_t offset, void *buf, size_t len) {
-    BlockHeader *h = ptr_to_block(ptr);
-    if (!h) return -1;
+    BlockHeader *header_ptr = ptr_to_block(ptr);
+    if (!header_ptr) return -1;
 
-    if (!is_block_valid(h)) {
-        if (debug) printf("Quarantining block at %p", h);
-        quarantine_block(h);
+    if (!is_block_valid(header_ptr)) {
+        if (debug) printf("Quarantining block at %p", header_ptr);
+        quarantine_block(header_ptr);
         return -1;
     }
-
-    if (offset + len > h->size) return -1;
-
-    memcpy(buf, ((uint8_t*)h + sizeof(BlockHeader)) + offset, len);
+    if (offset + len > header_ptr->size) return -1;
+    memcpy(buf, ((uint8_t*)header_ptr + sizeof(BlockHeader)) + offset, len);
     return (int)len;
 }
 
@@ -751,27 +672,27 @@ int mm_read(void *ptr, size_t offset, void *buf, size_t len) {
  * pointer detected.
  */
 int mm_write(void *ptr, size_t offset, const void *src, size_t len) {
-    BlockHeader *h = ptr_to_block(ptr);
-    if (!h) return -1;
+    BlockHeader *header_ptr = ptr_to_block(ptr);
+    if (!header_ptr) return -1;
 
-    if (!is_block_valid(h)) {
-        if (debug) printf("Quarantining block at %p", h);
-        quarantine_block(h);
+    if (!is_block_valid(header_ptr)) {
+        if (debug) printf("Quarantining block at %p", header_ptr);
+        quarantine_block(header_ptr);
         return -1;
     }
 
-    if (offset + len > h->size) return -1;
+    if (offset + len > header_ptr->size) return -1;
 
-    memcpy(((uint8_t*)h + sizeof(BlockHeader)) + offset, src, len);
+    memcpy(((uint8_t*)header_ptr + sizeof(BlockHeader)) + offset, src, len);
 
-    h->seq++;
-    h->crc = get_header_crc(h);
-    h->payload_crc = get_payload_crc(h);
+    header_ptr->seq++;
+    header_ptr->checksum = get_header_checksum(header_ptr);
+    header_ptr->payload_checksum = get_payload_checksum(header_ptr);
 
-    BlockFooter *f = get_footer(h);
-    f->seq = h->seq;
-    f->pad_size = h->pad_size;
-    f->crc = get_footer_crc(f);
+    BlockFooter *footer_ptr = get_footer_ptr(header_ptr);
+    footer_ptr->seq = header_ptr->seq;
+    footer_ptr->pad_size = header_ptr->pad_size;
+    footer_ptr->checksum = get_footer_checksum(footer_ptr);
 
     return (int)len;
 }
@@ -791,42 +712,42 @@ void mm_free(void *ptr) {
     }
     if (debug) printf("    Freeing block at %p.\n", ptr);
 
-    BlockHeader *h = ptr_to_block(ptr);
-    if (!h) {
+    BlockHeader *header_ptr = ptr_to_block(ptr);
+    if (!header_ptr) {
         if (debug) printf("    No header to pointer.\n");
         return;
     }
-    if (debug) printf("    Header pointer = %p.\n", h);
+    if (debug) printf("    Header pointer = %p.\n", header_ptr);
 
-    if (h->state != USED) {
+    if (header_ptr->state != USED) {
         if (debug) printf("    Block is not used, quarantining.\n");
-        quarantine_block(h);
+        quarantine_block(header_ptr);
         return;
     }
 
-    if (!is_block_valid(h)) {
-        if (debug) printf("Quarantining block at %p", h);
-        quarantine_block(h);
+    if (!is_block_valid(header_ptr)) {
+        if (debug) printf("Quarantining block at %p", header_ptr);
+        quarantine_block(header_ptr);
         return;
     }
 
-    h->state = FREE;
-    h->seq++;
+    header_ptr->state = FREE;
+    header_ptr->seq++;
 
-    BlockFooter *f = get_footer(h);
-    f->seq = h->seq;
-    f->pad_size = h->pad_size;
-    f->crc = get_footer_crc(f);
+    BlockFooter *footer_ptr = get_footer_ptr(header_ptr);
+    footer_ptr->seq = header_ptr->seq;
+    footer_ptr->pad_size = header_ptr->pad_size;
+    footer_ptr->checksum = get_footer_checksum(footer_ptr);
 
-    h->crc = get_header_crc(h);
+    header_ptr->checksum = get_header_checksum(header_ptr);
 
-    uint8_t *payload = (uint8_t*)h + sizeof(BlockHeader);
-    for (size_t i = 0; i < h->size; i++)
-        payload[i] = UNUSED_PATTERN[i % 5];
-    h->payload_crc = get_payload_crc(h);
+    uint8_t *payload_ptr = (uint8_t*)header_ptr + sizeof(BlockHeader);
+    for (size_t i = 0; i < header_ptr->size; i++)
+        payload_ptr[i] = UNUSED_PATTERN[i % 5];
+    header_ptr->payload_checksum = get_payload_checksum(header_ptr);
 
     if (debug) printf("    Mergeing free blocks...\n");
-    merge_free_blocks(h);
+    merge_free_blocks(header_ptr);
 }
 
 
@@ -839,73 +760,64 @@ void mm_free(void *ptr) {
  * @return void* The pointer to the resized block, or NULL on failure.
  */
 void *mm_realloc(void *ptr, size_t new_size) {
-    /* Case 1: Behave like malloc when ptr == NULL */
-    if (!ptr)
-        return mm_malloc(new_size);
+    // If not pointer provided, behave like mm_malloc.
+    if (!ptr) return mm_malloc(new_size);
 
-    /* Resolve the block from ptr */
-    BlockHeader *h = ptr_to_block(ptr);
-    if (!h)
-        return NULL; /* ptr invalid or quarantined */
+    // Get the header pointer for the block.
+    BlockHeader *header_ptr = ptr_to_block(ptr);
+    if (!header_ptr) return NULL;
 
-    if (!is_block_valid(h)) {
-        if (debug) printf("Quarantining block at %p", h);
-        quarantine_block(h);
+    if (!is_block_valid(header_ptr)) {
+        if (debug) printf("Quarantining block at %p", header_ptr);
+        quarantine_block(header_ptr);
         return NULL;
     }
+    // If they are the same size, return the pointer.
+    if (new_size == header_ptr->size) return ptr;
 
-    /* Case 2: Shrinking or same size → keep block */
-    if (new_size <= h->size)
-        return ptr;
-
-    /* Case 3: Need larger block → allocate new one */
+    // If you need a larger block, allocate a new one and free the old.
     void *new_ptr = mm_malloc(new_size);
-    if (!new_ptr)
-        return NULL;
+    if (!new_ptr) return NULL;
 
-    /* Copy the old payload safely */
-    size_t copy_size = h->size;
-    memcpy((uint8_t*)new_ptr,
-           (uint8_t*)h + sizeof(BlockHeader),
-           copy_size);
+    // Copy the old payload safely
+    size_t copy_size = header_ptr->size;
+    memcpy((uint8_t*)new_ptr, (uint8_t*)header_ptr + sizeof(BlockHeader),
+    copy_size);
 
-    /* Free the old block */
+    // Free the old block
     mm_free(ptr);
-
     return new_ptr;
 }
 
 
-/******************************************************************************
- *
- * Debug Function
- *
- *****************************************************************************/
-
-
-void print_block_stats(BlockHeader *h) {
-    BlockFooter *f = get_footer(h);
-    printf("Block @ %p (offset @ %u):\n", h, ptr_to_off(h));
+/**
+ * @brief Prints the block metadata.
+ * 
+ * @param header_ptr A pointer to the block header.
+ */
+void print_block_stats(BlockHeader *header_ptr) {
+    BlockFooter *f = get_footer_ptr(header_ptr);
+    printf("Block @ %p (offset @ %u):\n",
+        header_ptr, ptr_to_offset(header_ptr));
     printf("  Header:\n");
-    printf("    consistency = %x\n", h->consistency);
-    printf("    size        = %u\n", h->size);
+    printf("    consistency = %x\n", header_ptr->consistency);
+    printf("    size        = %u\n", header_ptr->size);
     printf("    state       = %u (%s)\n",
-        h->state,
-        (h->state == FREE ? "FREE" :
-            (h->state == USED ? "USED" :
-                (h->state == QUARANTINED ? "QUARANTINED" : "???"))));
-    printf("    prev        = %u\n", h->prev);
-    printf("    next        = %u\n", h->next);
-    printf("    seq         = %u\n", h->seq);
-    printf("    crc         = %u\n", h->crc);
-
+        header_ptr->state,
+        (header_ptr->state == FREE ? "FREE" :
+            (header_ptr->state == USED ? "USED" :
+                (header_ptr->state == QUARANTINED ? "QUARANTINED" : "???"))));
+    printf("    prev        = %u\n", header_ptr->prev);
+    printf("    next        = %u\n", header_ptr->next);
+    printf("    seq         = %u\n", header_ptr->seq);
+    printf("    checksum         = %u\n", header_ptr->checksum);
+    printf("    payload checksum = %u\n", header_ptr->payload_checksum);
     printf("  Footer:\n");
     printf("    consistency = %x\n", f->consistency);
     printf("    size        = %u\n", f->size);
     printf("    seq         = %u\n", f->seq);
-    printf("    crc         = %u\n", f->crc);
-
-    printf("    valid       = %d\n\n", is_block_valid(h));
+    printf("    checksum         = %u\n", f->checksum);
+    printf("    valid       = %d\n\n", is_block_valid(header_ptr));
 }
 
 
@@ -913,29 +825,24 @@ void print_block_stats(BlockHeader *h) {
  * @brief Output current heap usage and integrity statistics for debugging.
  * 
  */
-void mm_heap_stats(void) {
+void mm_heap_stats() {
     if (!g_heap) {
         printf("Heap not initialized.\n");
         return;
     }
-
     GlobalHeader *G = (GlobalHeader*)g_heap;
     uint32_t off = G->first_block;
-
     printf("=== Heap Stats ===\n");
     printf("Heap size: %u\n", G->heap_size);
     printf("First block offset: %u\n\n", G->first_block);
-
     while (off) {
-        BlockHeader *h = off_to_ptr(off);
+        BlockHeader *h = offset_to_ptr(off);
         if (!h) {
             printf("Invalid block offset %u\n", off);
             break;
         }
         print_block_stats(h);
-
         off = h->next;
     }
-
     printf("=== End Heap Stats ===\n");
 }
