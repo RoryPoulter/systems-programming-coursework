@@ -3,6 +3,7 @@ report/
 runme
 submissions/
 *.pdf
+*.zip
 
 # IDE Settings
 .vscode/
